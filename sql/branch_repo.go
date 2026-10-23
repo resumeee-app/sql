@@ -40,14 +40,23 @@ func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]d
 
 func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*domain.Branch, error) {
 	var branch domain.Branch
-	if err := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).First(&branch).Error; err != nil {
+	query := r.db.WithContext(ctx).Where("id = ?", id)
+	if userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if err := query.First(&branch).Error; err != nil {
 		return nil, mapError(err)
+	}
+
+	targetUserID := userID
+	if targetUserID == "" {
+		targetUserID = branch.UserID
 	}
 
 	var currentMasterRev int64
 	_ = r.db.WithContext(ctx).
 		Model(&domain.Profile{}).
-		Where("user_id = ?", userID).
+		Where("user_id = ?", targetUserID).
 		Select("master_revision").
 		Scan(&currentMasterRev).Error
 	branch.IsStale = branch.IsStaleRevision(currentMasterRev)
@@ -108,9 +117,11 @@ func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.Br
 
 func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID string) (*domain.BranchVersion, error) {
 	var version domain.BranchVersion
-	err := r.db.WithContext(ctx).
-		Where("branch_id = ? AND id = ?", branchID, versionID).
-		First(&version).Error
+	query := r.db.WithContext(ctx).Where("id = ?", versionID)
+	if branchID != "" {
+		query = query.Where("branch_id = ?", branchID)
+	}
+	err := query.First(&version).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
