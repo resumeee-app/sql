@@ -2,49 +2,23 @@ package sqlite
 
 import (
 	"context"
-	"fmt"
-	htmltemplate "html/template"
-	"strings"
-	texttemplate "text/template"
 
 	"gorm.io/gorm"
 
 	"resumeee/internal/domain"
+	"resumeee/internal/renderer"
 )
 
 type templateRepository struct {
 	db *gorm.DB
 }
 
-// SafeFuncMap provides whitelisted helper functions for template rendering without filesystem or network access.
-var SafeFuncMap = map[string]any{
-	"lower":   strings.ToLower,
-	"upper":   strings.ToUpper,
-	"trim":    strings.TrimSpace,
-	"join":    strings.Join,
-	"split":   strings.Split,
-	"replace": strings.ReplaceAll,
-}
+// SafeFuncMap delegates to renderer.SafeFuncMap for safe, sandboxed template helper functions.
+var SafeFuncMap = renderer.SafeFuncMap
 
-// ValidateTemplateSet parses HTML, Markdown, and PlainText templates to ensure syntactic validity,
-// verify that only whitelisted functions are called, and enforce Go's html/template contextual auto-escaping.
+// ValidateTemplateSet delegates pre-persistence dry-run validation to internal/renderer.
 func ValidateTemplateSet(tmpl *domain.TemplateSet) error {
-	if tmpl.HTMLTemplate != "" {
-		if _, err := htmltemplate.New("html").Funcs(SafeFuncMap).Parse(tmpl.HTMLTemplate); err != nil {
-			return fmt.Errorf("%w in html_template: %v", domain.ErrTemplateSyntax, err)
-		}
-	}
-	if tmpl.MarkdownTemplate != "" {
-		if _, err := texttemplate.New("md").Funcs(SafeFuncMap).Parse(tmpl.MarkdownTemplate); err != nil {
-			return fmt.Errorf("%w in markdown_template: %v", domain.ErrTemplateSyntax, err)
-		}
-	}
-	if tmpl.TextTemplate != "" {
-		if _, err := texttemplate.New("text").Funcs(SafeFuncMap).Parse(tmpl.TextTemplate); err != nil {
-			return fmt.Errorf("%w in text_template: %v", domain.ErrTemplateSyntax, err)
-		}
-	}
-	return nil
+	return renderer.Validate(tmpl)
 }
 
 // NewTemplateRepository constructs a SQLite-backed TemplateRepository.
@@ -99,13 +73,5 @@ func (r *templateRepository) DeleteTemplate(ctx context.Context, userID, id stri
 
 // SafeFuncMapRender parses and executes an HTML template string against data with contextual auto-escaping.
 func SafeFuncMapRender(tmplStr string, data any) (string, error) {
-	tmpl, err := htmltemplate.New("render").Funcs(SafeFuncMap).Parse(tmplStr)
-	if err != nil {
-		return "", err
-	}
-	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
+	return renderer.RenderFormat(domain.OutputFormatHTML, tmplStr, data)
 }
