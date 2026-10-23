@@ -1,0 +1,910 @@
+package sqlite_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"strings"
+	"testing"
+	"time"
+
+	"resumeee/internal/domain"
+	"resumeee/internal/repository/sqlite"
+)
+
+func setupTestDB(t *testing.T) (
+	domain.ProfileRepository,
+	domain.PresetRepository,
+	domain.TemplateRepository,
+	domain.BranchRepository,
+) {
+	t.Helper()
+	// Using shared cache memory database for tests
+	db, err := sqlite.New("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open test sqlite db: %v", err)
+	}
+
+	profileRepo := sqlite.NewProfileRepository(db)
+	presetRepo := sqlite.NewPresetRepository(db)
+	templateRepo := sqlite.NewTemplateRepository(db)
+	branchRepo := sqlite.NewBranchRepository(db)
+
+	return profileRepo, presetRepo, templateRepo, branchRepo
+}
+
+func TestDB_Initialization(t *testing.T) {
+	db, err := sqlite.New("file:init_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("failed to get sql.DB: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	var fkEnabled int
+	if err := db.Raw("PRAGMA foreign_keys;").Scan(&fkEnabled).Error; err != nil {
+		t.Fatalf("failed to check foreign_keys pragma: %v", err)
+	}
+	if fkEnabled != 1 {
+		t.Errorf("expected foreign_keys=1, got %d", fkEnabled)
+	}
+}
+
+func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-%d", time.Now().UnixNano())
+
+	// 1. Initial Profile Upsert
+	profile := &domain.Profile{
+		ID:       "prof-1",
+		UserID:   userID,
+		FullName: "Jane Doe",
+		Email:    "jane@example.com",
+	}
+	if err := profileRepo.UpsertProfile(ctx, profile); err != nil {
+		t.Fatalf("failed to upsert profile: %v", err)
+	}
+
+	p, err := profileRepo.GetProfile(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get profile: %v", err)
+	}
+	if p.MasterRevision != 1 {
+		t.Errorf("expected initial MasterRevision=1, got %d", p.MasterRevision)
+	}
+
+	// 2. Profile Update increments revision
+	p.Headline = "Staff Engineer"
+	if err := profileRepo.UpsertProfile(ctx, p); err != nil {
+		t.Fatalf("failed to update profile: %v", err)
+	}
+	p, _ = profileRepo.GetProfile(ctx, userID)
+	if p.MasterRevision != 2 {
+		t.Errorf("expected MasterRevision=2 after profile update, got %d", p.MasterRevision)
+	}
+
+	// 3. Create Skill increments revision
+	skill := &domain.Skill{
+		ID:       "skill-go",
+		UserID:   userID,
+		Name:     "Go",
+		Category: "Languages",
+	}
+	if err := profileRepo.CreateSkill(ctx, skill); err != nil {
+		t.Fatalf("failed to create skill: %v", err)
+	}
+	p, _ = profileRepo.GetProfile(ctx, userID)
+	if p.MasterRevision != 3 {
+		t.Errorf("expected MasterRevision=3 after CreateSkill, got %d", p.MasterRevision)
+	}
+
+	// 4. Create WorkExperience increments revision
+	exp := &domain.WorkExperience{
+		ID:             "exp-1",
+		UserID:         userID,
+		Company:        "Acme Corp",
+		RoleTitle:      "Lead Architect",
+		EmploymentType: domain.EmploymentTypeFullTime,
+		StartDate:      "2022-01-01",
+		Skills:         []domain.Skill{*skill},
+		CompanyContact: &domain.ContactDetail{Type: domain.ContactTypeEmail, Value: "hr@acme.com"},
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("failed to create experience: %v", err)
+	}
+	p, _ = profileRepo.GetProfile(ctx, userID)
+	if p.MasterRevision != 4 {
+		t.Errorf("expected MasterRevision=4 after CreateExperience, got %d", p.MasterRevision)
+	}
+
+	// 5. Create Fact increments revision
+	fact := &domain.Fact{
+		ID:        "fact-1",
+		UserID:    userID,
+		OwnerID:   exp.ID,
+		OwnerType: domain.OwnerTypeWorkExperience,
+		Statement: "Reduced latency by 45%",
+		Impact:    "45% p99 latency reduction across 12 services",
+		Skills:    []domain.Skill{*skill},
+	}
+	if err := profileRepo.CreateFact(ctx, fact); err != nil {
+		t.Fatalf("failed to create fact: %v", err)
+	}
+	p, _ = profileRepo.GetProfile(ctx, userID)
+	if p.MasterRevision != 5 {
+		t.Errorf("expected MasterRevision=5 after CreateFact, got %d", p.MasterRevision)
+	}
+
+	// 6. Delete Experience increments revision
+	if err := profileRepo.DeleteExperience(ctx, userID, exp.ID); err != nil {
+		t.Fatalf("failed to delete experience: %v", err)
+	}
+	p, _ = profileRepo.GetProfile(ctx, userID)
+	if p.MasterRevision != 6 {
+		t.Errorf("expected MasterRevision=6 after DeleteExperience, got %d", p.MasterRevision)
+	}
+}
+
+func TestProfileRepository_PolymorphicFactsAndSnapshot(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-snapshot-%d", time.Now().UnixNano())
+
+	// Profile
+	if err := profileRepo.UpsertProfile(ctx, &domain.Profile{
+		ID:       "prof-snap",
+		UserID:   userID,
+		FullName: "Alex Developer",
+	}); err != nil {
+		t.Fatalf("failed to upsert profile: %v", err)
+	}
+
+	// Skill
+	skillGo := domain.Skill{ID: "sk-go", UserID: userID, Name: "Go"}
+	skillGorm := domain.Skill{ID: "sk-gorm", UserID: userID, Name: "GORM"}
+	if err := profileRepo.CreateSkill(ctx, &skillGo); err != nil {
+		t.Fatalf("failed to create skillGo: %v", err)
+	}
+	if err := profileRepo.CreateSkill(ctx, &skillGorm); err != nil {
+		t.Fatalf("failed to create skillGorm: %v", err)
+	}
+
+	// Experience with polymorphic fact and skills
+	exp := &domain.WorkExperience{
+		ID:        "exp-snap",
+		UserID:    userID,
+		Company:   "Tech Co",
+		RoleTitle: "Senior Engineer",
+		StartDate: "2023-01-01",
+		Skills:    []domain.Skill{skillGo, skillGorm},
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("failed to create experience: %v", err)
+	}
+
+	expFact := &domain.Fact{
+		ID:        "fact-exp",
+		UserID:    userID,
+		OwnerID:   exp.ID,
+		OwnerType: domain.OwnerTypeWorkExperience,
+		Statement: "Built high throughput pipeline",
+		Skills:    []domain.Skill{skillGo},
+	}
+	if err := profileRepo.CreateFact(ctx, expFact); err != nil {
+		t.Fatalf("failed to create expFact: %v", err)
+	}
+
+	// Project with polymorphic fact
+	proj := &domain.Project{
+		ID:        "proj-snap",
+		UserID:    userID,
+		Name:      "Resumeee Engine",
+		StartDate: "2024-01-01",
+		Skills:    []domain.Skill{skillGo},
+	}
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	projFact := &domain.Fact{
+		ID:        "fact-proj",
+		UserID:    userID,
+		OwnerID:   proj.ID,
+		OwnerType: domain.OwnerTypeProject,
+		Statement: "Created zero-dependency SQLite backend",
+		Skills:    []domain.Skill{skillGo, skillGorm},
+	}
+	if err := profileRepo.CreateFact(ctx, projFact); err != nil {
+		t.Fatalf("failed to create projFact: %v", err)
+	}
+
+	// Education with polymorphic fact
+	edu := &domain.Education{
+		ID:          "edu-snap",
+		UserID:      userID,
+		Institution: "MIT",
+		Degree:      "B.S.",
+		Field:       "Computer Science",
+	}
+	if err := profileRepo.CreateEducation(ctx, edu); err != nil {
+		t.Fatalf("failed to create education: %v", err)
+	}
+
+	eduFact := &domain.Fact{
+		ID:        "fact-edu",
+		UserID:    userID,
+		OwnerID:   edu.ID,
+		OwnerType: domain.OwnerTypeEducation,
+		Statement: "Graduated with honors",
+	}
+	if err := profileRepo.CreateFact(ctx, eduFact); err != nil {
+		t.Fatalf("failed to create eduFact: %v", err)
+	}
+
+	// Verify Aggregate Snapshot
+	snap, err := profileRepo.GetSnapshot(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get snapshot: %v", err)
+	}
+
+	if snap.Profile.FullName != "Alex Developer" {
+		t.Errorf("expected full name Alex Developer, got %s", snap.Profile.FullName)
+	}
+	if len(snap.Skills) != 2 {
+		t.Errorf("expected 2 skills in snapshot, got %d", len(snap.Skills))
+	}
+	if len(snap.Experiences) != 1 || len(snap.Experiences[0].Facts) != 1 {
+		t.Errorf("expected 1 experience with 1 fact, got %d exps and %d facts", len(snap.Experiences), len(snap.Experiences[0].Facts))
+	}
+	if len(snap.Projects) != 1 || len(snap.Projects[0].Facts) != 1 {
+		t.Errorf("expected 1 project with 1 fact, got %d projs and %d facts", len(snap.Projects), len(snap.Projects[0].Facts))
+	}
+	if len(snap.Education) != 1 || len(snap.Education[0].Facts) != 1 {
+		t.Errorf("expected 1 education with 1 fact, got %d edus and %d facts", len(snap.Education), len(snap.Education[0].Facts))
+	}
+}
+
+func TestBranchRepository_SequentialVersionsAndRecovery(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, branchRepo := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-branch-%d", time.Now().UnixNano())
+
+	// Create Branch
+	branch := &domain.Branch{
+		ID:            "branch-1",
+		UserID:        userID,
+		Name:          "Backend Staff Role",
+		TemplateSetID: "tmpl-1",
+	}
+	if err := branchRepo.CreateBranch(ctx, branch); err != nil {
+		t.Fatalf("failed to create branch: %v", err)
+	}
+
+	// Create sequential versions
+	v1 := &domain.BranchVersion{
+		ID:                 "v-1",
+		BranchID:           branch.ID,
+		MasterRevisionUsed: 1,
+	}
+	if err := branchRepo.CreateVersion(ctx, v1); err != nil {
+		t.Fatalf("failed to create version 1: %v", err)
+	}
+	if v1.VersionNumber != 1 {
+		t.Errorf("expected VersionNumber=1, got %d", v1.VersionNumber)
+	}
+	if v1.Status != domain.VersionStatusPending {
+		t.Errorf("expected default Status=pending, got %s", v1.Status)
+	}
+
+	v2 := &domain.BranchVersion{
+		ID:                 "v-2",
+		BranchID:           branch.ID,
+		MasterRevisionUsed: 2,
+	}
+	if err := branchRepo.CreateVersion(ctx, v2); err != nil {
+		t.Fatalf("failed to create version 2: %v", err)
+	}
+	if v2.VersionNumber != 2 {
+		t.Errorf("expected VersionNumber=2, got %d", v2.VersionNumber)
+	}
+
+	// Concurrent version creation preserves sequential integrity
+	const concurrentWorkers = 5
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrentWorkers)
+
+	for i := 0; i < concurrentWorkers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			v := &domain.BranchVersion{
+				ID:                 fmt.Sprintf("v-conc-%d", idx),
+				BranchID:           branch.ID,
+				MasterRevisionUsed: 2,
+			}
+			if err := branchRepo.CreateVersion(ctx, v); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("concurrent CreateVersion error: %v", err)
+	}
+
+	versions, err := branchRepo.ListVersions(ctx, branch.ID)
+	if err != nil {
+		t.Fatalf("failed to list versions: %v", err)
+	}
+	// Total versions: v1, v2 + 5 concurrent = 7
+	if len(versions) != 7 {
+		t.Errorf("expected 7 versions, got %d", len(versions))
+	}
+
+	// Verify numbers are unique and 1..7
+	seen := make(map[int]bool)
+	for _, v := range versions {
+		if seen[v.VersionNumber] {
+			t.Errorf("duplicate VersionNumber observed: %d", v.VersionNumber)
+		}
+		seen[v.VersionNumber] = true
+	}
+
+	// Test FailInterruptedVersions
+	if err := branchRepo.FailInterruptedVersions(ctx, "server restarted"); err != nil {
+		t.Fatalf("failed to execute FailInterruptedVersions: %v", err)
+	}
+
+	updatedV1, err := branchRepo.GetVersion(ctx, branch.ID, "v-1")
+	if err != nil {
+		t.Fatalf("failed to get v-1: %v", err)
+	}
+	if updatedV1.Status != domain.VersionStatusFailed {
+		t.Errorf("expected v-1 status to be failed, got %s", updatedV1.Status)
+	}
+	if updatedV1.ErrorMessage != "server restarted" {
+		t.Errorf("expected error message 'server restarted', got '%s'", updatedV1.ErrorMessage)
+	}
+}
+
+func TestPresetAndTemplateRepositories(t *testing.T) {
+	ctx := context.Background()
+	_, presetRepo, templateRepo, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-config-%d", time.Now().UnixNano())
+
+	// Template Set CRUD
+	tmpl := &domain.TemplateSet{
+		ID:               "tmpl-clean",
+		UserID:           userID,
+		Name:             "Standard Clean",
+		HTMLTemplate:     "<h1>{{.FullName}}</h1>",
+		MarkdownTemplate: "# {{.FullName}}",
+		TextTemplate:     "{{.FullName}}",
+	}
+	if err := templateRepo.CreateTemplate(ctx, tmpl); err != nil {
+		t.Fatalf("failed to create template: %v", err)
+	}
+
+	gotTmpl, err := templateRepo.GetTemplate(ctx, userID, tmpl.ID)
+	if err != nil {
+		t.Fatalf("failed to get template: %v", err)
+	}
+	if gotTmpl.Name != "Standard Clean" {
+		t.Errorf("expected template name 'Standard Clean', got %s", gotTmpl.Name)
+	}
+
+	// Preset CRUD
+	preset := &domain.Preset{
+		ID:                 "preset-tech",
+		UserID:             userID,
+		Name:               "1-Page Tech Resume",
+		SystemInstructions: "Focus on distributed systems and quantitative impact.",
+		TemplateSetID:      tmpl.ID,
+	}
+	if err := presetRepo.CreatePreset(ctx, preset); err != nil {
+		t.Fatalf("failed to create preset: %v", err)
+	}
+
+	gotPreset, err := presetRepo.GetPreset(ctx, userID, preset.ID)
+	if err != nil {
+		t.Fatalf("failed to get preset: %v", err)
+	}
+	if gotPreset.Name != "1-Page Tech Resume" {
+		t.Errorf("expected preset name '1-Page Tech Resume', got %s", gotPreset.Name)
+	}
+
+	// Verify NotFound mapping
+	_, err = presetRepo.GetPreset(ctx, userID, "non-existent")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent preset, got %v", err)
+	}
+}
+
+func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-replace-%d", time.Now().UnixNano())
+
+	snapshot := &domain.MasterProfileSnapshot{
+		Profile: domain.Profile{
+			ID:             "prof-repl",
+			UserID:         userID,
+			FullName:       "Original Name",
+			MasterRevision: 10,
+		},
+		MasterRevision: 10,
+		Skills: []domain.Skill{
+			{ID: "sk-1", UserID: userID, Name: "Python"},
+			{ID: "sk-2", UserID: userID, Name: "Rust"},
+		},
+		Experiences: []domain.WorkExperience{
+			{
+				ID:        "exp-1",
+				UserID:    userID,
+				Company:   "Startup Inc",
+				RoleTitle: "Founding Engineer",
+				StartDate: "2020-01-01",
+			},
+		},
+		Projects: []domain.Project{
+			{
+				ID:        "proj-1",
+				UserID:    userID,
+				Name:      "Distributed Store",
+				StartDate: "2021-01-01",
+			},
+		},
+		Education: []domain.Education{
+			{
+				ID:          "edu-1",
+				UserID:      userID,
+				Institution: "Stanford",
+				Degree:      "M.S.",
+				Field:       "Computer Science",
+			},
+		},
+		Certifications: []domain.Certification{
+			{
+				ID:     "cert-1",
+				UserID: userID,
+				Name:   "CKA",
+			},
+		},
+	}
+
+	if err := profileRepo.ReplaceCareerGraph(ctx, userID, snapshot); err != nil {
+		t.Fatalf("failed to replace career graph: %v", err)
+	}
+
+	snapAfter, err := profileRepo.GetSnapshot(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get snapshot after replace: %v", err)
+	}
+
+	if snapAfter.MasterRevision != 10 {
+		t.Errorf("expected MasterRevision 10, got %d", snapAfter.MasterRevision)
+	}
+	if len(snapAfter.Skills) != 2 {
+		t.Errorf("expected 2 skills, got %d", len(snapAfter.Skills))
+	}
+	if len(snapAfter.Experiences) != 1 {
+		t.Errorf("expected 1 experience, got %d", len(snapAfter.Experiences))
+	}
+}
+
+func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, branchRepo := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-branch-life-%d", time.Now().UnixNano())
+
+	// Profile with revision 5
+	_ = profileRepo.UpsertProfile(ctx, &domain.Profile{
+		ID:             "p-life",
+		UserID:         userID,
+		FullName:       "Branch Tester",
+		MasterRevision: 5,
+	})
+
+	// Create Branch
+	b := &domain.Branch{
+		ID:            "br-life",
+		UserID:        userID,
+		Name:          "Frontend Staff Engineer",
+		TemplateSetID: "tmpl-1",
+	}
+	if err := branchRepo.CreateBranch(ctx, b); err != nil {
+		t.Fatalf("failed to create branch: %v", err)
+	}
+
+	// Verify staleness is true since LastSyncedMasterRevision=0 < Profile.MasterRevision=5
+	fetchedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
+	if err != nil {
+		t.Fatalf("failed to get branch: %v", err)
+	}
+	if !fetchedBranch.IsStale {
+		t.Errorf("expected branch to be stale when LastSyncedMasterRevision=0 and Profile=5")
+	}
+
+	// Create Version
+	v := &domain.BranchVersion{
+		ID:                 "ver-life-1",
+		BranchID:           b.ID,
+		MasterRevisionUsed: 5,
+		Status:             domain.VersionStatusProcessing,
+	}
+	if err := branchRepo.CreateVersion(ctx, v); err != nil {
+		t.Fatalf("failed to create version: %v", err)
+	}
+
+	// Complete Version
+	v.Status = domain.VersionStatusCompleted
+	v.HTMLOutput = "<h1>Resume</h1>"
+	if err := branchRepo.CompleteVersion(ctx, v); err != nil {
+		t.Fatalf("failed to complete version: %v", err)
+	}
+
+	// Check Branch updated
+	updatedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
+	if err != nil {
+		t.Fatalf("failed to get updated branch: %v", err)
+	}
+	if updatedBranch.ActiveVersionID == nil || *updatedBranch.ActiveVersionID != v.ID {
+		t.Errorf("expected ActiveVersionID to be %s", v.ID)
+	}
+	if updatedBranch.LastSyncedMasterRevision != 5 {
+		t.Errorf("expected LastSyncedMasterRevision to be 5, got %d", updatedBranch.LastSyncedMasterRevision)
+	}
+	if updatedBranch.IsStale {
+		t.Errorf("expected branch to NOT be stale once synced with revision 5")
+	}
+
+	// Test GetVersionByNumber
+	vByNum, err := branchRepo.GetVersionByNumber(ctx, b.ID, 1)
+	if err != nil {
+		t.Fatalf("failed to get version by number: %v", err)
+	}
+	if vByNum.ID != v.ID {
+		t.Errorf("expected version ID %s, got %s", v.ID, vByNum.ID)
+	}
+
+	// Delete branch
+	if err := branchRepo.DeleteBranch(ctx, userID, b.ID); err != nil {
+		t.Fatalf("failed to delete branch: %v", err)
+	}
+	_, err = branchRepo.GetBranch(ctx, userID, b.ID)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound after branch deletion, got %v", err)
+	}
+}
+
+func TestProfileRepository_FullEntityCRUD(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+	userID := fmt.Sprintf("user-crud-%d", time.Now().UnixNano())
+
+	// Initialize Profile
+	_ = profileRepo.UpsertProfile(ctx, &domain.Profile{
+		ID:       "prof-crud",
+		UserID:   userID,
+		FullName: "CRUD User",
+	})
+
+	// 1. IncrementMasterRevision directly
+	rev, err := profileRepo.IncrementMasterRevision(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to direct increment master revision: %v", err)
+	}
+	if rev != 2 {
+		t.Errorf("expected revision 2, got %d", rev)
+	}
+
+	// 2. Skill CRUD
+	sk := &domain.Skill{ID: "sk-c", UserID: userID, Name: "Docker"}
+	if err := profileRepo.CreateSkill(ctx, sk); err != nil {
+		t.Fatalf("create skill failed: %v", err)
+	}
+	skills, err := profileRepo.ListSkills(ctx, userID)
+	if err != nil || len(skills) != 1 {
+		t.Fatalf("list skills failed: %v, len=%d", err, len(skills))
+	}
+	fetchedSk, err := profileRepo.GetSkill(ctx, userID, sk.ID)
+	if err != nil || fetchedSk.Name != "Docker" {
+		t.Fatalf("get skill failed: %v", err)
+	}
+	sk.Name = "Docker & Containers"
+	if err := profileRepo.UpdateSkill(ctx, sk); err != nil {
+		t.Fatalf("update skill failed: %v", err)
+	}
+	if err := profileRepo.DeleteSkill(ctx, userID, sk.ID); err != nil {
+		t.Fatalf("delete skill failed: %v", err)
+	}
+	if err := profileRepo.DeleteSkill(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent skill, got %v", err)
+	}
+
+	// 3. Project CRUD
+	proj := &domain.Project{ID: "proj-c", UserID: userID, Name: "Project C"}
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("create project failed: %v", err)
+	}
+	projs, err := profileRepo.ListProjects(ctx, userID)
+	if err != nil || len(projs) != 1 {
+		t.Fatalf("list projects failed: %v, len=%d", err, len(projs))
+	}
+	fetchedProj, err := profileRepo.GetProject(ctx, userID, proj.ID)
+	if err != nil || fetchedProj.Name != "Project C" {
+		t.Fatalf("get project failed: %v", err)
+	}
+	proj.Name = "Project C Updated"
+	if err := profileRepo.UpdateProject(ctx, proj); err != nil {
+		t.Fatalf("update project failed: %v", err)
+	}
+	if err := profileRepo.DeleteProject(ctx, userID, proj.ID); err != nil {
+		t.Fatalf("delete project failed: %v", err)
+	}
+	if err := profileRepo.DeleteProject(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent project, got %v", err)
+	}
+
+	// 4. Education CRUD
+	edu := &domain.Education{ID: "edu-c", UserID: userID, Institution: "State College"}
+	if err := profileRepo.CreateEducation(ctx, edu); err != nil {
+		t.Fatalf("create edu failed: %v", err)
+	}
+	edus, err := profileRepo.ListEducation(ctx, userID)
+	if err != nil || len(edus) != 1 {
+		t.Fatalf("list edus failed: %v, len=%d", err, len(edus))
+	}
+	fetchedEdu, err := profileRepo.GetEducation(ctx, userID, edu.ID)
+	if err != nil || fetchedEdu.Institution != "State College" {
+		t.Fatalf("get edu failed: %v", err)
+	}
+	edu.Institution = "State University"
+	if err := profileRepo.UpdateEducation(ctx, edu); err != nil {
+		t.Fatalf("update edu failed: %v", err)
+	}
+	if err := profileRepo.DeleteEducation(ctx, userID, edu.ID); err != nil {
+		t.Fatalf("delete edu failed: %v", err)
+	}
+	if err := profileRepo.DeleteEducation(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent edu, got %v", err)
+	}
+
+	// 5. Certification CRUD
+	cert := &domain.Certification{ID: "cert-c", UserID: userID, Name: "AWS SAA"}
+	if err := profileRepo.CreateCertification(ctx, cert); err != nil {
+		t.Fatalf("create cert failed: %v", err)
+	}
+	certs, err := profileRepo.ListCertifications(ctx, userID)
+	if err != nil || len(certs) != 1 {
+		t.Fatalf("list certs failed: %v, len=%d", err, len(certs))
+	}
+	fetchedCert, err := profileRepo.GetCertification(ctx, userID, cert.ID)
+	if err != nil || fetchedCert.Name != "AWS SAA" {
+		t.Fatalf("get cert failed: %v", err)
+	}
+	cert.Name = "AWS Solutions Architect Associate"
+	if err := profileRepo.UpdateCertification(ctx, cert); err != nil {
+		t.Fatalf("update cert failed: %v", err)
+	}
+	if err := profileRepo.DeleteCertification(ctx, userID, cert.ID); err != nil {
+		t.Fatalf("delete cert failed: %v", err)
+	}
+	if err := profileRepo.DeleteCertification(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent cert, got %v", err)
+	}
+
+	// 6. Experience & Facts CRUD
+	exp := &domain.WorkExperience{
+		ID:        "exp-c",
+		UserID:    userID,
+		Company:   "Startup Labs",
+		RoleTitle: "Engineer",
+		StartDate: "2021-01-01",
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("create exp failed: %v", err)
+	}
+	exps, err := profileRepo.ListExperiences(ctx, userID)
+	if err != nil || len(exps) != 1 {
+		t.Fatalf("list exps failed: %v, len=%d", err, len(exps))
+	}
+	fetchedExp, err := profileRepo.GetExperience(ctx, userID, exp.ID)
+	if err != nil || fetchedExp.Company != "Startup Labs" {
+		t.Fatalf("get exp failed: %v", err)
+	}
+	exp.RoleTitle = "Senior Engineer"
+	if err := profileRepo.UpdateExperience(ctx, exp); err != nil {
+		t.Fatalf("update exp failed: %v", err)
+	}
+
+	fact := &domain.Fact{
+		ID:        "fact-c",
+		UserID:    userID,
+		OwnerID:   exp.ID,
+		OwnerType: domain.OwnerTypeWorkExperience,
+		Statement: "Optimized DB queries",
+	}
+	if err := profileRepo.CreateFact(ctx, fact); err != nil {
+		t.Fatalf("create fact failed: %v", err)
+	}
+	facts, err := profileRepo.ListFactsByOwner(ctx, userID, string(domain.OwnerTypeWorkExperience), exp.ID)
+	if err != nil || len(facts) != 1 {
+		t.Fatalf("list facts failed: %v, len=%d", err, len(facts))
+	}
+	fetchedFact, err := profileRepo.GetFact(ctx, userID, fact.ID)
+	if err != nil || fetchedFact.Statement != "Optimized DB queries" {
+		t.Fatalf("get fact failed: %v", err)
+	}
+	fact.Statement = "Optimized SQLite indexes"
+	if err := profileRepo.UpdateFact(ctx, fact); err != nil {
+		t.Fatalf("update fact failed: %v", err)
+	}
+	if err := profileRepo.DeleteFact(ctx, userID, fact.ID); err != nil {
+		t.Fatalf("delete fact failed: %v", err)
+	}
+	if err := profileRepo.DeleteFact(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound deleting non-existent fact, got %v", err)
+	}
+	_ = profileRepo.DeleteExperience(ctx, userID, exp.ID)
+}
+
+func TestPresetTemplateBranch_ExtendedCRUD(t *testing.T) {
+	ctx := context.Background()
+	_, presetRepo, templateRepo, branchRepo := setupTestDB(t)
+	userID := fmt.Sprintf("user-ext-%d", time.Now().UnixNano())
+
+	// Preset
+	p := &domain.Preset{
+		ID:                 "p-ext",
+		UserID:             userID,
+		Name:               "Preset Ext",
+		SystemInstructions: "Instructions",
+		TemplateSetID:      "tmpl-ext",
+	}
+	_ = presetRepo.CreatePreset(ctx, p)
+	presets, err := presetRepo.ListPresets(ctx, userID)
+	if err != nil || len(presets) != 1 {
+		t.Fatalf("list presets failed: %v", err)
+	}
+	p.Name = "Preset Ext Updated"
+	if err := presetRepo.UpdatePreset(ctx, p); err != nil {
+		t.Fatalf("update preset failed: %v", err)
+	}
+	if err := presetRepo.DeletePreset(ctx, userID, p.ID); err != nil {
+		t.Fatalf("delete preset failed: %v", err)
+	}
+	if err := presetRepo.DeletePreset(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent preset, got %v", err)
+	}
+
+	// Template
+	tmpl := &domain.TemplateSet{
+		ID:               "tmpl-ext",
+		UserID:           userID,
+		Name:             "Tmpl Ext",
+		HTMLTemplate:     "<div>{{.FullName}}</div>",
+		MarkdownTemplate: "{{.FullName}}",
+		TextTemplate:     "{{.FullName}}",
+	}
+	_ = templateRepo.CreateTemplate(ctx, tmpl)
+	tmpls, err := templateRepo.ListTemplates(ctx, userID)
+	if err != nil || len(tmpls) != 1 {
+		t.Fatalf("list templates failed: %v", err)
+	}
+	tmpl.Name = "Tmpl Ext Updated"
+	if err := templateRepo.UpdateTemplate(ctx, tmpl); err != nil {
+		t.Fatalf("update template failed: %v", err)
+	}
+	if err := templateRepo.DeleteTemplate(ctx, userID, tmpl.ID); err != nil {
+		t.Fatalf("delete template failed: %v", err)
+	}
+	if err := templateRepo.DeleteTemplate(ctx, userID, "non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent template, got %v", err)
+	}
+
+	// Branch
+	br := &domain.Branch{
+		ID:            "br-ext",
+		UserID:        userID,
+		Name:          "Branch Ext",
+		TemplateSetID: "tmpl-ext",
+	}
+	_ = branchRepo.CreateBranch(ctx, br)
+	branches, err := branchRepo.ListBranches(ctx, userID)
+	if err != nil || len(branches) != 1 {
+		t.Fatalf("list branches failed: %v", err)
+	}
+	br.Name = "Branch Ext Updated"
+	if err := branchRepo.UpdateBranch(ctx, br); err != nil {
+		t.Fatalf("update branch failed: %v", err)
+	}
+
+	// Version status
+	v := &domain.BranchVersion{
+		ID:       "v-ext",
+		BranchID: br.ID,
+	}
+	_ = branchRepo.CreateVersion(ctx, v)
+	if err := branchRepo.UpdateVersionStatus(ctx, v.ID, domain.VersionStatusCompleted, ""); err != nil {
+		t.Fatalf("update version status failed: %v", err)
+	}
+	if err := branchRepo.UpdateVersionStatus(ctx, "non-existent", domain.VersionStatusFailed, "err"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent version status, got %v", err)
+	}
+}
+
+func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
+	ctx := context.Background()
+	_, _, templateRepo, _ := setupTestDB(t)
+	userID := fmt.Sprintf("user-sec-%d", time.Now().UnixNano())
+
+	// 1. Template with invalid / unclosed syntax must fail with ErrTemplateSyntax
+	invalidTmpl := &domain.TemplateSet{
+		ID:           "tmpl-malformed",
+		UserID:       userID,
+		Name:         "Malformed Template",
+		HTMLTemplate: "<h1>{{.FullName", // Unclosed action tag
+	}
+	err := templateRepo.CreateTemplate(ctx, invalidTmpl)
+	if !errors.Is(err, domain.ErrTemplateSyntax) {
+		t.Errorf("expected ErrTemplateSyntax for unclosed HTML action tag, got %v", err)
+	}
+
+	// 2. Template calling non-whitelisted / dangerous functions must fail with ErrTemplateSyntax
+	dangerousTmpl := &domain.TemplateSet{
+		ID:           "tmpl-dangerous",
+		UserID:       userID,
+		Name:         "Dangerous Template",
+		HTMLTemplate: "<h1>{{exec .Command}}</h1>",
+	}
+	err = templateRepo.CreateTemplate(ctx, dangerousTmpl)
+	if !errors.Is(err, domain.ErrTemplateSyntax) {
+		t.Errorf("expected ErrTemplateSyntax for non-whitelisted function call, got %v", err)
+	}
+
+	// 3. Valid template with context-aware auto-escaping of user-supplied content
+	safeTmpl := &domain.TemplateSet{
+		ID:           "tmpl-safe",
+		UserID:       userID,
+		Name:         "Safe Escaped Template",
+		HTMLTemplate: `<div class="user"><span id="name">{{.FullName}}</span><a href="{{.Website}}">Profile</a></div>`,
+	}
+	if err := templateRepo.CreateTemplate(ctx, safeTmpl); err != nil {
+		t.Fatalf("failed to create safe template: %v", err)
+	}
+
+	// Verify rendering with html/template context auto-escapes XSS payloads
+	parsed, err := sqlite.SafeFuncMapRender(safeTmpl.HTMLTemplate, struct {
+		FullName string
+		Website  string
+	}{
+		FullName: `<script>alert("xss")</script>`,
+		Website:  `javascript:alert('xss')`,
+	})
+	if err != nil {
+		t.Fatalf("failed to test-render safe template: %v", err)
+	}
+
+	// html/template converts <script> in HTML context to &lt;script&gt; and javascript: in URL context to #ZgotmplZ
+	if strings.Contains(parsed, "<script>") {
+		t.Errorf("expected HTML context to escape raw <script>, got raw string in: %s", parsed)
+	}
+	if strings.Contains(parsed, "javascript:") {
+		t.Errorf("expected URL context to sanitize javascript: scheme, got: %s", parsed)
+	}
+}
