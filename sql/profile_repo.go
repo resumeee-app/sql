@@ -197,6 +197,9 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		// Re-insert experiences
 		for i := range snapshot.Experiences {
 			snapshot.Experiences[i].UserID = userID
+			for j := range snapshot.Experiences[i].Facts {
+				snapshot.Experiences[i].Facts[j].UserID = userID
+			}
 			if err := tx.Create(&snapshot.Experiences[i]).Error; err != nil {
 				return err
 			}
@@ -205,6 +208,9 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		// Re-insert projects
 		for i := range snapshot.Projects {
 			snapshot.Projects[i].UserID = userID
+			for j := range snapshot.Projects[i].Facts {
+				snapshot.Projects[i].Facts[j].UserID = userID
+			}
 			if err := tx.Create(&snapshot.Projects[i]).Error; err != nil {
 				return err
 			}
@@ -213,6 +219,9 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		// Re-insert education
 		for i := range snapshot.Education {
 			snapshot.Education[i].UserID = userID
+			for j := range snapshot.Education[i].Facts {
+				snapshot.Education[i].Facts[j].UserID = userID
+			}
 			if err := tx.Create(&snapshot.Education[i]).Error; err != nil {
 				return err
 			}
@@ -223,6 +232,24 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 			snapshot.Certifications[i].UserID = userID
 			if err := tx.Create(&snapshot.Certifications[i]).Error; err != nil {
 				return err
+			}
+		}
+
+		// Re-insert standalone facts or facts not yet inserted, and link fact skills
+		for i := range snapshot.Facts {
+			snapshot.Facts[i].UserID = userID
+			var count int64
+			if err := tx.Model(&domain.Fact{}).Where("id = ?", snapshot.Facts[i].ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				if err := tx.Create(&snapshot.Facts[i]).Error; err != nil {
+					return err
+				}
+			} else if len(snapshot.Facts[i].Skills) > 0 {
+				if err := tx.Model(&domain.Fact{ID: snapshot.Facts[i].ID}).Association("Skills").Replace(snapshot.Facts[i].Skills); err != nil {
+					return err
+				}
 			}
 		}
 
