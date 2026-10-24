@@ -360,6 +360,9 @@ func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.Wo
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(exp).Error; err != nil {
 			return err
 		}
+		if err := tx.Model(exp).Association("Skills").Replace(exp.Skills); err != nil {
+			return err
+		}
 		return r.incrementRevisionTx(tx, exp.UserID)
 	})
 }
@@ -433,6 +436,9 @@ func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Proj
 func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(proj).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(proj).Association("Skills").Replace(proj.Skills); err != nil {
 			return err
 		}
 		return r.incrementRevisionTx(tx, proj.UserID)
@@ -617,6 +623,9 @@ func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) e
 func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(fact).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(fact).Association("Skills").Replace(fact.Skills); err != nil {
 			return err
 		}
 		return r.incrementRevisionTx(tx, fact.UserID)

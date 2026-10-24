@@ -908,3 +908,147 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 		t.Errorf("expected URL context to sanitize javascript: scheme, got: %s", parsed)
 	}
 }
+
+func TestBranchRepository_VersionCompositeUniqueConstraint(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, branchRepo := setupTestDB(t)
+
+	db, err := sqlite.New("file:unique_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	branchID := "branch-unique-1"
+	b := &domain.Branch{
+		ID:            branchID,
+		UserID:        "user-u1",
+		Name:          "Unique Test Branch",
+		TemplateSetID: "tmpl-1",
+	}
+	if err := db.WithContext(ctx).Create(b).Error; err != nil {
+		t.Fatalf("failed to create branch: %v", err)
+	}
+
+	v1 := &domain.BranchVersion{
+		ID:            "ver-u1-1",
+		BranchID:      branchID,
+		VersionNumber: 1,
+		Status:        domain.VersionStatusCompleted,
+	}
+	if err := db.WithContext(ctx).Create(v1).Error; err != nil {
+		t.Fatalf("failed to create first version: %v", err)
+	}
+
+	// Attempting to insert a duplicate version_number for the same branch must fail
+	vDuplicate := &domain.BranchVersion{
+		ID:            "ver-u1-2",
+		BranchID:      branchID,
+		VersionNumber: 1,
+		Status:        domain.VersionStatusCompleted,
+	}
+	if err := db.WithContext(ctx).Create(vDuplicate).Error; err == nil {
+		t.Fatalf("expected unique constraint violation on duplicate (branch_id, version_number), got nil")
+	}
+
+	// Inserting version_number 1 for a DIFFERENT branch must succeed (composite uniqueness)
+	branchID2 := "branch-unique-2"
+	b2 := &domain.Branch{
+		ID:            branchID2,
+		UserID:        "user-u1",
+		Name:          "Unique Test Branch 2",
+		TemplateSetID: "tmpl-1",
+	}
+	if err := db.WithContext(ctx).Create(b2).Error; err != nil {
+		t.Fatalf("failed to create branch 2: %v", err)
+	}
+
+	vDiffBranch := &domain.BranchVersion{
+		ID:            "ver-u2-1",
+		BranchID:      branchID2,
+		VersionNumber: 1,
+		Status:        domain.VersionStatusCompleted,
+	}
+	if err := db.WithContext(ctx).Create(vDiffBranch).Error; err != nil {
+		t.Fatalf("expected version_number 1 on different branch to succeed, got: %v", err)
+	}
+	_ = branchRepo
+}
+
+func TestProfileRepository_AssociationSkillsPurge(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+	userID := fmt.Sprintf("user-purge-%d", time.Now().UnixNano())
+
+	// Create 3 skills
+	s1 := &domain.Skill{ID: fmt.Sprintf("s1-%d", time.Now().UnixNano()), UserID: userID, Name: "Go"}
+	s2 := &domain.Skill{ID: fmt.Sprintf("s2-%d", time.Now().UnixNano()), UserID: userID, Name: "Rust"}
+	s3 := &domain.Skill{ID: fmt.Sprintf("s3-%d", time.Now().UnixNano()), UserID: userID, Name: "Python"}
+	_ = profileRepo.CreateSkill(ctx, s1)
+	_ = profileRepo.CreateSkill(ctx, s2)
+	_ = profileRepo.CreateSkill(ctx, s3)
+
+	// Create Experience with 3 skills
+	exp := &domain.WorkExperience{
+		ID:        fmt.Sprintf("exp-purge-%d", time.Now().UnixNano()),
+		UserID:    userID,
+		Company:   "Acme",
+		RoleTitle: "Engineer",
+		StartDate: "2020-01-01",
+		Skills:    []domain.Skill{*s1, *s2, *s3},
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("failed to create experience: %v", err)
+	}
+
+	fetched, err := profileRepo.GetExperience(ctx, userID, exp.ID)
+	if err != nil {
+		t.Fatalf("failed to get experience: %v", err)
+	}
+	if len(fetched.Skills) != 3 {
+		t.Fatalf("expected 3 skills, got %d", len(fetched.Skills))
+	}
+
+	// Update Experience to only have 1 skill (s1)
+	fetched.Skills = []domain.Skill{*s1}
+	if err := profileRepo.UpdateExperience(ctx, fetched); err != nil {
+		t.Fatalf("failed to update experience: %v", err)
+	}
+
+	refetched, err := profileRepo.GetExperience(ctx, userID, exp.ID)
+	if err != nil {
+		t.Fatalf("failed to refetch experience: %v", err)
+	}
+	if len(refetched.Skills) != 1 {
+		t.Errorf("expected 1 skill remaining after update, got %d", len(refetched.Skills))
+	}
+	if len(refetched.Skills) > 0 && refetched.Skills[0].ID != s1.ID {
+		t.Errorf("expected skill %s, got %s", s1.ID, refetched.Skills[0].ID)
+	}
+
+	// Create Project with 2 skills
+	proj := &domain.Project{
+		ID:     fmt.Sprintf("proj-purge-%d", time.Now().UnixNano()),
+		UserID: userID,
+		Name:   "P1",
+		Skills: []domain.Skill{*s1, *s2},
+	}
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	fetchedProj, _ := profileRepo.GetProject(ctx, userID, proj.ID)
+	if len(fetchedProj.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(fetchedProj.Skills))
+	}
+
+	// Update Project to have 0 skills
+	fetchedProj.Skills = []domain.Skill{}
+	if err := profileRepo.UpdateProject(ctx, fetchedProj); err != nil {
+		t.Fatalf("failed to update project: %v", err)
+	}
+	refetchedProj, _ := profileRepo.GetProject(ctx, userID, proj.ID)
+	if len(refetchedProj.Skills) != 0 {
+		t.Errorf("expected 0 skills remaining on project, got %d", len(refetchedProj.Skills))
+	}
+}
+
+
