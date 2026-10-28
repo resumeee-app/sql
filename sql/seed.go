@@ -78,7 +78,7 @@ func SeedDefaultData(ctx context.Context, db *gorm.DB, defaultUserID ...string) 
 					Headline:           "Software Engineer",
 					MasterRevision:     1,
 					DefaultProvider:    "gemini",
-					DefaultModel:       "gemini-2.5-pro",
+					DefaultModel:       "gemini-3.8-flash",
 					GlobalWritingRules: "Prioritize measurable outcomes, active voice, and clear technical context.",
 					CreatedAt:          time.Now().UTC(),
 					UpdatedAt:          time.Now().UTC(),
