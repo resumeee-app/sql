@@ -86,6 +86,75 @@ func SeedDefaultData(ctx context.Context, db *gorm.DB, defaultUserID ...string) 
 				if err := tx.Create(&defaultProfile).Error; err != nil {
 					return fmt.Errorf("seeding default profile: %w", err)
 				}
+				existingProf = defaultProfile
+			} else {
+				return err
+			}
+		}
+
+		// 4. Seed Default Branch (Untailored Master Profile directly rendered)
+		var existingBranch domain.Branch
+		defaultBranchID := domain.DefaultBranchID(targetUserID)
+		err = tx.Where("user_id = ? AND (id = ? OR is_default = ?)", targetUserID, defaultBranchID, true).First(&existingBranch).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				var tmpl domain.TemplateSet
+				if err := tx.Where("id = ?", TemplateStandardCleanID).First(&tmpl).Error; err != nil {
+					return fmt.Errorf("finding standard template for default branch: %w", err)
+				}
+
+				now := time.Now().UTC()
+				defaultBranch := domain.Branch{
+					ID:                       defaultBranchID,
+					UserID:                   targetUserID,
+					Name:                     domain.DefaultBranchName,
+					IsDefault:                true,
+					TemplateSetID:            TemplateStandardCleanID,
+					LastSyncedMasterRevision: existingProf.MasterRevision,
+					CreatedAt:                now,
+					UpdatedAt:                now,
+				}
+				if err := tx.Create(&defaultBranch).Error; err != nil {
+					return fmt.Errorf("seeding default branch: %w", err)
+				}
+
+				profileRepo := NewProfileRepository(tx)
+				snapshot, err := profileRepo.GetSnapshot(ctx, targetUserID)
+				if err != nil {
+					return fmt.Errorf("getting snapshot for default branch: %w", err)
+				}
+
+				tailoredContent := domain.SnapshotToTailoredContent(snapshot)
+				rendered, err := renderer.Render(ctx, &tmpl, &existingProf, tailoredContent)
+				if err != nil {
+					return fmt.Errorf("rendering default branch initial version: %w", err)
+				}
+
+				verID := "ver-default-" + targetUserID
+				ver := domain.BranchVersion{
+					ID:                 verID,
+					BranchID:           defaultBranch.ID,
+					VersionNumber:      1,
+					Status:             domain.VersionStatusCompleted,
+					MasterRevisionUsed: existingProf.MasterRevision,
+					TemplateSetIDUsed:  TemplateStandardCleanID,
+					ProviderUsed:       "none",
+					ModelUsed:          "none",
+					SourceType:         domain.SourceTypeMasterProfile,
+					TailoredContent:    tailoredContent,
+					HTMLOutput:         rendered.HTML,
+					MarkdownOutput:     rendered.Markdown,
+					PlainTextOutput:    rendered.PlainText,
+					CreatedAt:          now,
+					CompletedAt:        &now,
+				}
+				if err := tx.Create(&ver).Error; err != nil {
+					return fmt.Errorf("seeding default branch version: %w", err)
+				}
+
+				if err := tx.Model(&domain.Branch{}).Where("id = ?", defaultBranch.ID).Update("active_version_id", ver.ID).Error; err != nil {
+					return fmt.Errorf("setting default branch active version: %w", err)
+				}
 			} else {
 				return err
 			}

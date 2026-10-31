@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -20,7 +21,7 @@ func NewBranchRepository(db *gorm.DB) domain.BranchRepository {
 
 func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]domain.Branch, error) {
 	var branches []domain.Branch
-	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&branches).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("is_default DESC, created_at DESC").Find(&branches).Error; err != nil {
 		return nil, mapError(err)
 	}
 
@@ -79,6 +80,14 @@ func (r *branchRepository) UpdateBranch(ctx context.Context, branch *domain.Bran
 
 func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var branch domain.Branch
+		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&branch).Error; err != nil {
+			return mapError(err)
+		}
+		if branch.IsDefault {
+			return fmt.Errorf("%w: cannot delete default branch", domain.ErrDefaultBranchImmutable)
+		}
+
 		// Clean up branch versions
 		if err := tx.Where("branch_id = ?", id).Delete(&domain.BranchVersion{}).Error; err != nil {
 			return err
