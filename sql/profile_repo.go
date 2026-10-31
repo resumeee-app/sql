@@ -269,9 +269,19 @@ func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]do
 	return skills, mapError(err)
 }
 
+// GetSkill retrieves a skill record by either its canonical UUID or its compact short_id.
+// It scopes the lookup strictly to the authenticated userID to enforce multi-tenant isolation.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the skill.
+//
+// Returns:
+//   - Pointer to domain.Skill if found, or domain.ErrNotFound if no matching record exists.
 func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*domain.Skill, error) {
 	var skill domain.Skill
-	err := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).First(&skill).Error
+	err := r.db.WithContext(ctx).Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).First(&skill).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -332,13 +342,23 @@ func (r *profileRepository) ListExperiences(ctx context.Context, userID string) 
 	return exps, mapError(err)
 }
 
+// GetExperience retrieves a work experience record by either its canonical UUID or its compact short_id,
+// preloading all associated facts and skills within the authenticated user's tenant boundary.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the experience.
+//
+// Returns:
+//   - Pointer to domain.WorkExperience with preloaded relations, or domain.ErrNotFound.
 func (r *profileRepository) GetExperience(ctx context.Context, userID, id string) (*domain.WorkExperience, error) {
 	var exp domain.WorkExperience
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
 		Preload("Skills").
-		Where("user_id = ? AND id = ?", userID, id).
+		Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).
 		First(&exp).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -410,13 +430,23 @@ func (r *profileRepository) ListProjects(ctx context.Context, userID string) ([]
 	return projs, mapError(err)
 }
 
+// GetProject retrieves a project record by either its canonical UUID or its compact short_id,
+// preloading all associated facts and skills within the authenticated user's tenant boundary.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the project.
+//
+// Returns:
+//   - Pointer to domain.Project with preloaded relations, or domain.ErrNotFound.
 func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (*domain.Project, error) {
 	var proj domain.Project
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
 		Preload("Skills").
-		Where("user_id = ? AND id = ?", userID, id).
+		Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).
 		First(&proj).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -485,12 +515,22 @@ func (r *profileRepository) ListEducation(ctx context.Context, userID string) ([
 	return edus, mapError(err)
 }
 
+// GetEducation retrieves an education record by either its canonical UUID or its compact short_id,
+// preloading all associated facts within the authenticated user's tenant boundary.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the education credential.
+//
+// Returns:
+//   - Pointer to domain.Education with preloaded facts, or domain.ErrNotFound.
 func (r *profileRepository) GetEducation(ctx context.Context, userID, id string) (*domain.Education, error) {
 	var edu domain.Education
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
-		Where("user_id = ? AND id = ?", userID, id).
+		Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).
 		First(&edu).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -549,9 +589,19 @@ func (r *profileRepository) ListCertifications(ctx context.Context, userID strin
 	return certs, mapError(err)
 }
 
+// GetCertification retrieves a certification record by either its canonical UUID or its compact short_id
+// within the authenticated user's tenant boundary.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the certification.
+//
+// Returns:
+//   - Pointer to domain.Certification if found, or domain.ErrNotFound.
 func (r *profileRepository) GetCertification(ctx context.Context, userID, id string) (*domain.Certification, error) {
 	var cert domain.Certification
-	err := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).First(&cert).Error
+	err := r.db.WithContext(ctx).Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).First(&cert).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -590,20 +640,57 @@ func (r *profileRepository) DeleteCertification(ctx context.Context, userID, id 
 }
 
 // Facts CRUD
+// ListFactsByOwner retrieves all atomic facts belonging to a specific parent entity (work experience,
+// project, or education). If ownerID is provided as a short_id, it resolves the owner's canonical UUID
+// to query the underlying foreign key relation reliably.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - ownerType: Entity discriminator string ("work_experience", "project", "education").
+//   - ownerID: Canonical UUID or short_id of the parent entity.
+//
+// Returns:
+//   - Slice of domain.Fact records with preloaded skills, or an error.
 func (r *profileRepository) ListFactsByOwner(ctx context.Context, userID, ownerType, ownerID string) ([]domain.Fact, error) {
 	var facts []domain.Fact
+	targetOwnerID := ownerID
+	switch ownerType {
+	case string(domain.OwnerTypeWorkExperience):
+		if exp, err := r.GetExperience(ctx, userID, ownerID); err == nil && exp != nil {
+			targetOwnerID = exp.ID
+		}
+	case string(domain.OwnerTypeProject):
+		if proj, err := r.GetProject(ctx, userID, ownerID); err == nil && proj != nil {
+			targetOwnerID = proj.ID
+		}
+	case string(domain.OwnerTypeEducation):
+		if edu, err := r.GetEducation(ctx, userID, ownerID); err == nil && edu != nil {
+			targetOwnerID = edu.ID
+		}
+	}
 	err := r.db.WithContext(ctx).
 		Preload("Skills").
-		Where("user_id = ? AND owner_type = ? AND owner_id = ?", userID, ownerType, ownerID).
+		Where("user_id = ? AND owner_type = ? AND (owner_id = ? OR owner_id = ?)", userID, ownerType, targetOwnerID, ownerID).
 		Find(&facts).Error
 	return facts, mapError(err)
 }
 
+// GetFact retrieves an atomic fact record by either its canonical UUID or its compact short_id,
+// preloading all associated skills within the authenticated user's tenant boundary.
+//
+// Parameters:
+//   - ctx: Context for database cancellation and timeout propagation.
+//   - userID: Tenant identifier scoping the query.
+//   - id: Canonical UUID or compact short_id of the fact.
+//
+// Returns:
+//   - Pointer to domain.Fact with preloaded skills, or domain.ErrNotFound.
 func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*domain.Fact, error) {
 	var fact domain.Fact
 	err := r.db.WithContext(ctx).
 		Preload("Skills").
-		Where("user_id = ? AND id = ?", userID, id).
+		Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).
 		First(&fact).Error
 	if err != nil {
 		return nil, mapError(err)
