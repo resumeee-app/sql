@@ -168,6 +168,7 @@ func getBuiltinTemplateSets() []domain.TemplateSet {
 	return renderer.DefaultTemplateSets()
 }
 
+// getBuiltinPresets returns immutable system presets for 1-page tech resumes and immigration compliance CVs.
 func getBuiltinPresets(userID string) []domain.Preset {
 	now := time.Now().UTC()
 	return []domain.Preset{

@@ -17,12 +17,14 @@ func NewPresetRepository(db *gorm.DB) domain.PresetRepository {
 	return &presetRepository{db: db}
 }
 
+// ListPresets retrieves all presets registered for the user.
 func (r *presetRepository) ListPresets(ctx context.Context, userID string) ([]domain.Preset, error) {
 	var presets []domain.Preset
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&presets).Error
 	return presets, mapError(err)
 }
 
+// GetPreset retrieves a preset by user and preset ID.
 func (r *presetRepository) GetPreset(ctx context.Context, userID, id string) (*domain.Preset, error) {
 	var preset domain.Preset
 	err := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).First(&preset).Error
@@ -32,14 +34,17 @@ func (r *presetRepository) GetPreset(ctx context.Context, userID, id string) (*d
 	return &preset, nil
 }
 
+// CreatePreset inserts a new preset record.
 func (r *presetRepository) CreatePreset(ctx context.Context, preset *domain.Preset) error {
 	return mapError(r.db.WithContext(ctx).Create(preset).Error)
 }
 
+// UpdatePreset saves changes to an existing preset record.
 func (r *presetRepository) UpdatePreset(ctx context.Context, preset *domain.Preset) error {
 	return mapError(r.db.WithContext(ctx).Save(preset).Error)
 }
 
+// DeletePreset removes a preset record by user and preset ID.
 func (r *presetRepository) DeletePreset(ctx context.Context, userID, id string) error {
 	res := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Preset{})
 	if res.Error != nil {

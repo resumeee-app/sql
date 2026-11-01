@@ -19,6 +19,7 @@ func NewBranchRepository(db *gorm.DB) domain.BranchRepository {
 	return &branchRepository{db: db}
 }
 
+// ListBranches retrieves all branches for a user and calculates staleness against the current master revision.
 func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]domain.Branch, error) {
 	var branches []domain.Branch
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("is_default DESC, created_at DESC").Find(&branches).Error; err != nil {
@@ -39,6 +40,7 @@ func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]d
 	return branches, nil
 }
 
+// GetBranch retrieves a specific branch record and calculates its staleness.
 func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*domain.Branch, error) {
 	var branch domain.Branch
 	query := r.db.WithContext(ctx).Where("id = ?", id)
@@ -65,6 +67,7 @@ func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*d
 	return &branch, nil
 }
 
+// CreateBranch inserts a new resume branch record.
 func (r *branchRepository) CreateBranch(ctx context.Context, branch *domain.Branch) error {
 	if branch.CreatedAt.IsZero() {
 		branch.CreatedAt = time.Now().UTC()
@@ -73,11 +76,13 @@ func (r *branchRepository) CreateBranch(ctx context.Context, branch *domain.Bran
 	return mapError(r.db.WithContext(ctx).Create(branch).Error)
 }
 
+// UpdateBranch updates mutable branch fields and refreshes the updated timestamp.
 func (r *branchRepository) UpdateBranch(ctx context.Context, branch *domain.Branch) error {
 	branch.UpdatedAt = time.Now().UTC()
 	return mapError(r.db.WithContext(ctx).Save(branch).Error)
 }
 
+// DeleteBranch removes a non-default branch and cascades deletion to all associated versions.
 func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var branch domain.Branch
@@ -103,7 +108,7 @@ func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) 
 	})
 }
 
-// Versioning
+// CreateVersion atomically assigns a sequential version number and creates a new branch version.
 func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.BranchVersion) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var maxVer int
@@ -124,6 +129,7 @@ func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.Br
 	})
 }
 
+// GetVersion retrieves a branch version by version UUID, optionally restricted to a specific branch.
 func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID string) (*domain.BranchVersion, error) {
 	var version domain.BranchVersion
 	query := r.db.WithContext(ctx).Where("id = ?", versionID)
@@ -137,6 +143,7 @@ func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID s
 	return &version, nil
 }
 
+// GetVersionByNumber retrieves a branch version by its sequential number within the branch.
 func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID string, versionNumber int) (*domain.BranchVersion, error) {
 	var version domain.BranchVersion
 	err := r.db.WithContext(ctx).
@@ -148,6 +155,7 @@ func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID stri
 	return &version, nil
 }
 
+// ListVersions returns all versions belonging to a branch ordered by version number ascending.
 func (r *branchRepository) ListVersions(ctx context.Context, branchID string) ([]domain.BranchVersion, error) {
 	var versions []domain.BranchVersion
 	err := r.db.WithContext(ctx).
@@ -157,6 +165,7 @@ func (r *branchRepository) ListVersions(ctx context.Context, branchID string) ([
 	return versions, mapError(err)
 }
 
+// UpdateVersionStatus updates status and error diagnostic message for a version.
 func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID string, status domain.VersionStatus, errMsg string) error {
 	updates := map[string]any{
 		"status":        status,
@@ -176,6 +185,7 @@ func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID st
 	return nil
 }
 
+// CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_master_revision.
 func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.BranchVersion) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
@@ -198,6 +208,7 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.
 	})
 }
 
+// FailInterruptedVersions transitions in-flight pending and processing versions to failed status on recovery.
 func (r *branchRepository) FailInterruptedVersions(ctx context.Context, reason string) error {
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).

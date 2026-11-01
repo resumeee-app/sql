@@ -26,6 +26,7 @@ func NewTemplateRepository(db *gorm.DB) domain.TemplateRepository {
 	return &templateRepository{db: db}
 }
 
+// ListTemplates returns user-owned and global built-in templates.
 func (r *templateRepository) ListTemplates(ctx context.Context, userID string) ([]domain.TemplateSet, error) {
 	var templates []domain.TemplateSet
 	// Allow retrieving user-owned templates OR global built-in templates
@@ -35,6 +36,7 @@ func (r *templateRepository) ListTemplates(ctx context.Context, userID string) (
 	return templates, mapError(err)
 }
 
+// GetTemplate fetches a template by user ID or built-in status and template ID.
 func (r *templateRepository) GetTemplate(ctx context.Context, userID, id string) (*domain.TemplateSet, error) {
 	var tmpl domain.TemplateSet
 	err := r.db.WithContext(ctx).
@@ -46,6 +48,7 @@ func (r *templateRepository) GetTemplate(ctx context.Context, userID, id string)
 	return &tmpl, nil
 }
 
+// CreateTemplate validates template syntax and inserts a new template set.
 func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
 	if err := ValidateTemplateSet(tmpl); err != nil {
 		return err
@@ -53,6 +56,7 @@ func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.Te
 	return mapError(r.db.WithContext(ctx).Create(tmpl).Error)
 }
 
+// UpdateTemplate validates template syntax and saves modifications.
 func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
 	if err := ValidateTemplateSet(tmpl); err != nil {
 		return err
@@ -60,6 +64,7 @@ func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.Te
 	return mapError(r.db.WithContext(ctx).Save(tmpl).Error)
 }
 
+// DeleteTemplate removes a custom template set.
 func (r *templateRepository) DeleteTemplate(ctx context.Context, userID, id string) error {
 	res := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).Delete(&domain.TemplateSet{})
 	if res.Error != nil {

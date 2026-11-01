@@ -19,6 +19,7 @@ func NewProfileRepository(db *gorm.DB) domain.ProfileRepository {
 	return &profileRepository{db: db}
 }
 
+// incrementRevisionTx atomically increments the user's master revision within an active transaction.
 func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) error {
 	var prof domain.Profile
 	err := tx.Where("user_id = ?", userID).First(&prof).Error
@@ -44,6 +45,7 @@ func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) erro
 		}).Error
 }
 
+// GetProfile retrieves the master profile record for the specified user.
 func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*domain.Profile, error) {
 	var prof domain.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil {
@@ -52,6 +54,7 @@ func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*dom
 	return &prof, nil
 }
 
+// UpsertProfile inserts or updates a profile record, incrementing the master revision.
 func (r *profileRepository) UpsertProfile(ctx context.Context, profile *domain.Profile) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing domain.Profile
@@ -74,6 +77,7 @@ func (r *profileRepository) UpsertProfile(ctx context.Context, profile *domain.P
 	})
 }
 
+// IncrementMasterRevision bumps the profile master revision counter and returns the new revision number.
 func (r *profileRepository) IncrementMasterRevision(ctx context.Context, userID string) (int64, error) {
 	var newRev int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -90,6 +94,7 @@ func (r *profileRepository) IncrementMasterRevision(ctx context.Context, userID 
 	return newRev, err
 }
 
+// GetSnapshot retrieves the complete hydrated career graph including skills, experiences, projects, education, certifications, and facts.
 func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*domain.MasterProfileSnapshot, error) {
 	var prof domain.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -153,6 +158,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 	}, nil
 }
 
+// ReplaceCareerGraph atomically purges and re-inserts the full career graph from a snapshot.
 func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID string, snapshot *domain.MasterProfileSnapshot) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clean up join tables first
@@ -263,6 +269,7 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 }
 
 // Skills CRUD
+// ListSkills returns all skills registered for the specified user.
 func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]domain.Skill, error) {
 	var skills []domain.Skill
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&skills).Error
@@ -288,6 +295,7 @@ func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*d
 	return &skill, nil
 }
 
+// CreateSkill creates a new skill and increments the master revision.
 func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(skill).Error; err != nil {
@@ -297,6 +305,7 @@ func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill
 	})
 }
 
+// UpdateSkill modifies a skill and increments the master revision.
 func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(skill).Error; err != nil {
@@ -306,6 +315,7 @@ func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill
 	})
 }
 
+// DeleteSkill deletes a skill and cleanups join tables before incrementing master revision.
 func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clean up join tables where skill is referenced
@@ -330,7 +340,7 @@ func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) 
 	})
 }
 
-// Work Experience CRUD
+// ListExperiences retrieves all work experience records with associations.
 func (r *profileRepository) ListExperiences(ctx context.Context, userID string) ([]domain.WorkExperience, error) {
 	var exps []domain.WorkExperience
 	err := r.db.WithContext(ctx).
@@ -366,6 +376,7 @@ func (r *profileRepository) GetExperience(ctx context.Context, userID, id string
 	return &exp, nil
 }
 
+// CreateExperience creates a work experience entry and increments master revision.
 func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(exp).Error; err != nil {
@@ -375,6 +386,7 @@ func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.Wo
 	})
 }
 
+// UpdateExperience saves modified experience fields and replaces skill associations.
 func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(exp).Error; err != nil {
@@ -387,6 +399,7 @@ func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.Wo
 	})
 }
 
+// DeleteExperience removes an experience, associated skills join rows, and owned facts.
 func (r *profileRepository) DeleteExperience(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clear many2many skills join table
@@ -418,7 +431,7 @@ func (r *profileRepository) DeleteExperience(ctx context.Context, userID, id str
 	})
 }
 
-// Projects CRUD
+// ListProjects returns all projects belonging to the specified user.
 func (r *profileRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
 	var projs []domain.Project
 	err := r.db.WithContext(ctx).
@@ -454,6 +467,7 @@ func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (
 	return &proj, nil
 }
 
+// CreateProject inserts a new project record and bumps master revision.
 func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(proj).Error; err != nil {
@@ -463,6 +477,7 @@ func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Proj
 	})
 }
 
+// UpdateProject saves modified project fields and updates skill associations.
 func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(proj).Error; err != nil {
@@ -475,6 +490,7 @@ func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Proj
 	})
 }
 
+// DeleteProject deletes a project, unlinks associated skills, and purges child facts.
 func (r *profileRepository) DeleteProject(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&domain.Project{ID: id}).Association("Skills").Clear(); err != nil {
@@ -504,7 +520,7 @@ func (r *profileRepository) DeleteProject(ctx context.Context, userID, id string
 	})
 }
 
-// Education CRUD
+// ListEducation retrieves all education entries for the specified user.
 func (r *profileRepository) ListEducation(ctx context.Context, userID string) ([]domain.Education, error) {
 	var edus []domain.Education
 	err := r.db.WithContext(ctx).
@@ -538,6 +554,7 @@ func (r *profileRepository) GetEducation(ctx context.Context, userID, id string)
 	return &edu, nil
 }
 
+// CreateEducation creates an education entry and increments master revision.
 func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(edu).Error; err != nil {
@@ -547,6 +564,7 @@ func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Edu
 	})
 }
 
+// UpdateEducation saves updated education fields and increments master revision.
 func (r *profileRepository) UpdateEducation(ctx context.Context, edu *domain.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(edu).Error; err != nil {
@@ -556,6 +574,7 @@ func (r *profileRepository) UpdateEducation(ctx context.Context, edu *domain.Edu
 	})
 }
 
+// DeleteEducation removes an education entry and its associated facts.
 func (r *profileRepository) DeleteEducation(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var factIDs []string
@@ -582,7 +601,7 @@ func (r *profileRepository) DeleteEducation(ctx context.Context, userID, id stri
 	})
 }
 
-// Certifications CRUD
+// ListCertifications returns all certifications registered under the user.
 func (r *profileRepository) ListCertifications(ctx context.Context, userID string) ([]domain.Certification, error) {
 	var certs []domain.Certification
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&certs).Error
@@ -608,6 +627,7 @@ func (r *profileRepository) GetCertification(ctx context.Context, userID, id str
 	return &cert, nil
 }
 
+// CreateCertification inserts a certification entry and increments master revision.
 func (r *profileRepository) CreateCertification(ctx context.Context, cert *domain.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(cert).Error; err != nil {
@@ -617,6 +637,7 @@ func (r *profileRepository) CreateCertification(ctx context.Context, cert *domai
 	})
 }
 
+// UpdateCertification modifies certification attributes and bumps master revision.
 func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domain.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(cert).Error; err != nil {
@@ -626,6 +647,7 @@ func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domai
 	})
 }
 
+// DeleteCertification removes a certification entry and increments master revision.
 func (r *profileRepository) DeleteCertification(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Certification{})
@@ -698,6 +720,7 @@ func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*do
 	return &fact, nil
 }
 
+// CreateFact inserts a fact bullet point and increments master revision.
 func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(fact).Error; err != nil {
@@ -707,6 +730,7 @@ func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) e
 	})
 }
 
+// UpdateFact updates fact statements, impact, or skill associations and increments master revision.
 func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(fact).Error; err != nil {
@@ -719,6 +743,7 @@ func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) e
 	})
 }
 
+// DeleteFact deletes a fact bullet, unlinks associated skills, and increments master revision.
 func (r *profileRepository) DeleteFact(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&domain.Fact{ID: id}).Association("Skills").Clear(); err != nil {
