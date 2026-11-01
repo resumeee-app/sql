@@ -16,6 +16,9 @@ const (
 	// Built-in Template Set IDs
 	TemplateStandardCleanID         = renderer.TemplateStandardCleanID
 	TemplateDetailedImmigrationCVID = renderer.TemplateDetailedImmigrationCVID
+	TemplateATSMinimalTxtID         = renderer.TemplateATSMinimalTxtID
+	TemplateATSHybridTechID         = renderer.TemplateATSHybridTechID
+	TemplateATSExecutiveCleanID     = renderer.TemplateATSExecutiveCleanID
 
 	// Built-in Preset IDs
 	Preset1PageTechResumeID          = "builtin-1-page-tech-resume"

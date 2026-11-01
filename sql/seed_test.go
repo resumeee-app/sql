@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"resumeee/internal/domain"
+	"resumeee/internal/renderer"
 	"resumeee/internal/repository/sqlite"
 )
 
@@ -40,8 +41,9 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	if len(templates) < 2 {
-		t.Errorf("expected at least 2 built-in templates, got %d", len(templates))
+	expectedTemplateCount := len(renderer.DefaultTemplateSets())
+	if len(templates) != expectedTemplateCount || len(templates) != 5 {
+		t.Fatalf("expected exactly %d built-in templates (count 5), got %d", expectedTemplateCount, len(templates))
 	}
 
 	tmplMap := make(map[string]domain.TemplateSet)
@@ -53,18 +55,29 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		}
 	}
 
-	cleanTmpl, ok := tmplMap["Standard Clean"]
-	if !ok {
-		t.Errorf("missing built-in template 'Standard Clean'")
-	} else if cleanTmpl.HTMLTemplate == "" || cleanTmpl.MarkdownTemplate == "" || cleanTmpl.TextTemplate == "" {
-		t.Errorf("expected 'Standard Clean' to have HTML, Markdown, and PlainText templates")
+	expectedTemplates := []struct {
+		name string
+		id   string
+	}{
+		{"Standard Clean", sqlite.TemplateStandardCleanID},
+		{"Detailed Immigration / CV", sqlite.TemplateDetailedImmigrationCVID},
+		{"ATS Minimal Plain-Text & Clean HTML", sqlite.TemplateATSMinimalTxtID},
+		{"ATS Modern Tech", sqlite.TemplateATSHybridTechID},
+		{"ATS Executive Clean", sqlite.TemplateATSExecutiveCleanID},
 	}
 
-	cvTmpl, ok := tmplMap["Detailed Immigration / CV"]
-	if !ok {
-		t.Errorf("missing built-in template 'Detailed Immigration / CV'")
-	} else if cvTmpl.HTMLTemplate == "" || cvTmpl.MarkdownTemplate == "" || cvTmpl.TextTemplate == "" {
-		t.Errorf("expected 'Detailed Immigration / CV' to have HTML, Markdown, and PlainText templates")
+	for _, exp := range expectedTemplates {
+		tmpl, ok := tmplMap[exp.name]
+		if !ok {
+			t.Errorf("missing built-in template %q", exp.name)
+			continue
+		}
+		if tmpl.ID != exp.id {
+			t.Errorf("expected template %q to have ID %q, got %q", exp.name, exp.id, tmpl.ID)
+		}
+		if tmpl.HTMLTemplate == "" || tmpl.MarkdownTemplate == "" || tmpl.TextTemplate == "" {
+			t.Errorf("expected %q to have HTML, Markdown, and PlainText templates", exp.name)
+		}
 	}
 
 	// 3. Verify built-in presets
@@ -191,8 +204,9 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	if len(templates) != 2 {
-		t.Errorf("expected exactly 2 templates after multiple seeds, got %d", len(templates))
+	expectedTemplateCount := len(renderer.DefaultTemplateSets())
+	if len(templates) != expectedTemplateCount {
+		t.Errorf("expected exactly %d templates after multiple seeds, got %d", expectedTemplateCount, len(templates))
 	}
 
 	presets, err := presetRepo.ListPresets(ctx, "default")
