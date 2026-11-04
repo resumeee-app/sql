@@ -192,12 +192,13 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 			return err
 		}
 
-		// Re-insert skills in batch
-		if len(snapshot.Skills) > 0 {
-			for i := range snapshot.Skills {
-				snapshot.Skills[i].UserID = userID
+		// Re-insert skills in batch using all consolidated skills across the snapshot
+		allSkills := snapshot.AllSkills()
+		if len(allSkills) > 0 {
+			for i := range allSkills {
+				allSkills[i].UserID = userID
 			}
-			if err := tx.CreateInBatches(snapshot.Skills, 100).Error; err != nil {
+			if err := tx.CreateInBatches(allSkills, 100).Error; err != nil {
 				return err
 			}
 		}

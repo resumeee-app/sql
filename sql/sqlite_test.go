@@ -505,6 +505,93 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 	}
 }
 
+func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-replace-nested-%d", time.Now().UnixNano())
+
+	skillTop := domain.Skill{ID: "sk-top", UserID: userID, Name: "Go", Category: "Languages"}
+	skillExp := domain.Skill{ID: "sk-exp", UserID: userID, Name: "PostgreSQL", Category: "Databases"}
+	skillFact := domain.Skill{ID: "sk-fact", UserID: userID, Name: "Kafka", Category: "Messaging"}
+	skillProj := domain.Skill{ID: "sk-proj", UserID: userID, Name: "React", Category: "Frontend"}
+
+	snapshot := &domain.MasterProfileSnapshot{
+		Profile: domain.Profile{
+			ID:             "prof-nested",
+			UserID:         userID,
+			FullName:       "Nested Tester",
+			MasterRevision: 1,
+		},
+		MasterRevision: 1,
+		Skills:         []domain.Skill{skillTop}, // Notice: only sk-top is in snapshot.Skills initially
+		Experiences: []domain.WorkExperience{
+			{
+				ID:        "exp-nested-1",
+				UserID:    userID,
+				Company:   "Tech Corp",
+				RoleTitle: "Backend Lead",
+				StartDate: "2020-01-01",
+				Skills:    []domain.Skill{skillTop, skillExp},
+				Facts: []domain.Fact{
+					{
+						ID:        "fact-nested-1",
+						UserID:    userID,
+						OwnerID:   "exp-nested-1",
+						OwnerType: domain.OwnerTypeWorkExperience,
+						Statement: "Scaled message queue pipeline",
+						Skills:    []domain.Skill{skillFact},
+					},
+				},
+			},
+		},
+		Projects: []domain.Project{
+			{
+				ID:        "proj-nested-1",
+				UserID:    userID,
+				Name:      "Web Console",
+				StartDate: "2021-01-01",
+				Skills:    []domain.Skill{skillProj},
+			},
+		},
+	}
+
+	if err := profileRepo.ReplaceCareerGraph(ctx, userID, snapshot); err != nil {
+		t.Fatalf("failed to replace career graph with nested skills: %v", err)
+	}
+
+	snapAfter, err := profileRepo.GetSnapshot(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get snapshot: %v", err)
+	}
+
+	// All 4 skills should now be consolidated and present in the user's snapshot.Skills
+	if len(snapAfter.Skills) != 4 {
+		t.Fatalf("expected 4 consolidated skills in snapAfter.Skills, got %d", len(snapAfter.Skills))
+	}
+
+	// Verify experience has both skills linked
+	if len(snapAfter.Experiences) != 1 {
+		t.Fatalf("expected 1 experience, got %d", len(snapAfter.Experiences))
+	}
+	if len(snapAfter.Experiences[0].Skills) != 2 {
+		t.Errorf("expected 2 skills on experience, got %d", len(snapAfter.Experiences[0].Skills))
+	}
+
+	// Verify fact has its skill linked
+	if len(snapAfter.Experiences[0].Facts) != 1 {
+		t.Fatalf("expected 1 fact on experience, got %d", len(snapAfter.Experiences[0].Facts))
+	}
+	if len(snapAfter.Experiences[0].Facts[0].Skills) != 1 || snapAfter.Experiences[0].Facts[0].Skills[0].ID != "sk-fact" {
+		t.Errorf("expected skill sk-fact on fact, got %+v", snapAfter.Experiences[0].Facts[0].Skills)
+	}
+
+	// Verify project has skill linked
+	if len(snapAfter.Projects) != 1 || len(snapAfter.Projects[0].Skills) != 1 || snapAfter.Projects[0].Skills[0].ID != "sk-proj" {
+		t.Errorf("expected skill sk-proj on project, got %+v", snapAfter.Projects[0].Skills)
+	}
+}
+
 func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
 	ctx := context.Background()
 	profileRepo, _, _, branchRepo := setupTestDB(t)
