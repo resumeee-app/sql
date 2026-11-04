@@ -1138,6 +1138,98 @@ func TestProfileRepository_AssociationSkillsPurge(t *testing.T) {
 	}
 }
 
+func TestProfileRepository_SkillResolution(t *testing.T) {
+	ctx := context.Background()
+	profileRepo, _, _, _ := setupTestDB(t)
+
+	userID := fmt.Sprintf("user-skills-%d", time.Now().UnixNano())
+	prof := &domain.Profile{
+		ID:       fmt.Sprintf("prof-%d", time.Now().UnixNano()),
+		UserID:   userID,
+		FullName: "Skill Tester",
+	}
+	if err := profileRepo.UpsertProfile(ctx, prof); err != nil {
+		t.Fatalf("failed to create master profile: %v", err)
+	}
+
+	// 1. Create Experience with raw skill names
+	exp := &domain.WorkExperience{
+		ID:        domain.GenerateID("exp"),
+		ShortID:   domain.GenerateShortID("exp"),
+		UserID:    userID,
+		Company:   "Tech Innovators",
+		RoleTitle: "Staff Engineer",
+		StartDate: "2023-01-01",
+		Skills: []domain.Skill{
+			{Name: "PostgreSQL"},
+			{Name: "Go"},
+		},
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("failed to create experience with raw skill names: %v", err)
+	}
+
+	fetchedExp, err := profileRepo.GetExperience(ctx, userID, exp.ID)
+	if err != nil {
+		t.Fatalf("failed to get experience: %v", err)
+	}
+	if len(fetchedExp.Skills) != 2 {
+		t.Fatalf("expected 2 resolved skills, got %d", len(fetchedExp.Skills))
+	}
+	for _, s := range fetchedExp.Skills {
+		if s.UserID != userID {
+			t.Errorf("expected skill UserID %q, got %q", userID, s.UserID)
+		}
+		if s.Name == "" || strings.HasPrefix(s.Name, "skill-") {
+			t.Errorf("expected human skill name, got %q", s.Name)
+		}
+		if s.Category != "General Skills" {
+			t.Errorf("expected default category 'General Skills', got %q", s.Category)
+		}
+	}
+
+	// 2. Create Project referencing one existing skill by case-insensitive name and one new skill
+	proj := &domain.Project{
+		ID:        domain.GenerateID("proj"),
+		ShortID:   domain.GenerateShortID("proj"),
+		UserID:    userID,
+		Name:      "Cloud Pipeline",
+		Skills: []domain.Skill{
+			{Name: "go"}, // case-insensitive match with existing "Go"
+			{Name: "Terraform"}, // new skill
+		},
+	}
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	fetchedProj, err := profileRepo.GetProject(ctx, userID, proj.ID)
+	if err != nil {
+		t.Fatalf("failed to get project: %v", err)
+	}
+	if len(fetchedProj.Skills) != 2 {
+		t.Fatalf("expected 2 skills on project, got %d", len(fetchedProj.Skills))
+	}
+
+	// 3. Verify GetSnapshot consolidates skills and deduplicates
+	snap, err := profileRepo.GetSnapshot(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get snapshot: %v", err)
+	}
+	// Total unique skills created: PostgreSQL, Go, Terraform = 3
+	if len(snap.Skills) != 3 {
+		t.Fatalf("expected 3 consolidated skills in snapshot, got %d", len(snap.Skills))
+	}
+
+	skillNames := make(map[string]bool)
+	for _, s := range snap.Skills {
+		skillNames[s.Name] = true
+	}
+	if !skillNames["PostgreSQL"] || !skillNames["Go"] || !skillNames["Terraform"] {
+		t.Errorf("expected PostgreSQL, Go, and Terraform in snapshot, got: %+v", snap.Skills)
+	}
+}
+
 func TestDB_SecondaryAndJoinTableIndexes(t *testing.T) {
 	db, err := sqlite.New("file:indexes_test?mode=memory&cache=shared")
 	if err != nil {

@@ -3,8 +3,10 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"resumeee/internal/domain"
@@ -145,7 +147,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		return nil, mapError(err)
 	}
 
-	return &domain.MasterProfileSnapshot{
+	snap := &domain.MasterProfileSnapshot{
 		Profile:        prof,
 		MasterRevision: prof.MasterRevision,
 		Skills:         skills,
@@ -155,7 +157,8 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		Certifications: certs,
 		Facts:          facts,
 		ExportedAt:     time.Now().UTC(),
-	}, nil
+	}
+	return snap.ConsolidateSkills(), nil
 }
 
 // ReplaceCareerGraph atomically purges and re-inserts the full career graph from a snapshot.
@@ -381,9 +384,118 @@ func (r *profileRepository) GetExperience(ctx context.Context, userID, id string
 	return &exp, nil
 }
 
+// isUUID checks whether a string represents a UUID (with or without a "skill-" or "sk-" prefix).
+func isUUID(s string) bool {
+	s = strings.TrimPrefix(s, "skill-")
+	s = strings.TrimPrefix(s, "sk-")
+	_, err := uuid.Parse(s)
+	return err == nil
+}
+
+// resolveSkillsTx resolves raw skill identifiers or names against the user's skills within an active transaction.
+// If an existing skill matches by ID, ShortID, or case-insensitive Name for the specified user, that skill is used.
+// If no existing skill matches and a valid skill name is provided, a new canonical Skill record is created
+// for the user and persisted in the database.
+func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkills []domain.Skill) ([]domain.Skill, error) {
+	if len(rawSkills) == 0 {
+		return []domain.Skill{}, nil
+	}
+
+	resolved := make([]domain.Skill, 0, len(rawSkills))
+	seen := make(map[string]struct{}, len(rawSkills))
+
+	for _, raw := range rawSkills {
+		rawID := strings.TrimSpace(raw.ID)
+		rawShortID := strings.TrimSpace(raw.ShortID)
+		rawName := strings.TrimSpace(raw.Name)
+
+		// Determine skill name candidate if name was passed directly or passed in ID
+		nameCandidate := rawName
+		if nameCandidate == "" && rawID != "" && !isUUID(rawID) {
+			nameCandidate = rawID
+		}
+
+		var found domain.Skill
+
+		// 1. Match existing skill by ID
+		if rawID != "" {
+			err := tx.Where("user_id = ? AND id = ?", userID, rawID).First(&found).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		}
+
+		// 2. Match existing skill by ShortID
+		if found.ID == "" && rawShortID != "" {
+			err := tx.Where("user_id = ? AND short_id = ?", userID, rawShortID).First(&found).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		}
+
+		// 3. Match existing skill by case-insensitive Name
+		if found.ID == "" && nameCandidate != "" {
+			err := tx.Where("user_id = ? AND LOWER(name) = LOWER(?)", userID, nameCandidate).First(&found).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		}
+
+		// If found, deduplicate and attach
+		if found.ID != "" {
+			if _, exists := seen[found.ID]; !exists {
+				seen[found.ID] = struct{}{}
+				resolved = append(resolved, found)
+			}
+			continue
+		}
+
+		// If not found and name candidate is empty or is an unknown UUID, do not create a stub skill
+		if nameCandidate == "" || isUUID(nameCandidate) {
+			continue
+		}
+
+		// 4. Create new canonical Skill for this user
+		newCategory := strings.TrimSpace(raw.Category)
+		if newCategory == "" {
+			newCategory = "General Skills"
+		}
+
+		newSkill := domain.Skill{
+			ID:              domain.GenerateID("skill"),
+			ShortID:         domain.GenerateShortID("skill"),
+			UserID:          userID,
+			Name:            nameCandidate,
+			Category:        newCategory,
+			Proficiency:     raw.Proficiency,
+			YearsExperience: raw.YearsExperience,
+			Keywords:        raw.Keywords,
+			Metadata:        raw.Metadata,
+			CreatedAt:       time.Now().UTC(),
+			UpdatedAt:       time.Now().UTC(),
+		}
+
+		if err := tx.Create(&newSkill).Error; err != nil {
+			return nil, err
+		}
+
+		if _, exists := seen[newSkill.ID]; !exists {
+			seen[newSkill.ID] = struct{}{}
+			resolved = append(resolved, newSkill)
+		}
+	}
+
+	return resolved, nil
+}
+
 // CreateExperience creates a work experience entry and increments master revision.
 func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		resolved, err := r.resolveSkillsTx(tx, exp.UserID, exp.Skills)
+		if err != nil {
+			return err
+		}
+		exp.Skills = resolved
 		if err := tx.Create(exp).Error; err != nil {
 			return err
 		}
@@ -394,7 +506,12 @@ func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.Wo
 // UpdateExperience saves modified experience fields and replaces skill associations.
 func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(exp).Error; err != nil {
+		resolved, err := r.resolveSkillsTx(tx, exp.UserID, exp.Skills)
+		if err != nil {
+			return err
+		}
+		exp.Skills = resolved
+		if err := tx.Session(&gorm.Session{FullSaveAssociations: false}).Save(exp).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(exp).Association("Skills").Replace(exp.Skills); err != nil {
@@ -475,6 +592,11 @@ func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (
 // CreateProject inserts a new project record and bumps master revision.
 func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		resolved, err := r.resolveSkillsTx(tx, proj.UserID, proj.Skills)
+		if err != nil {
+			return err
+		}
+		proj.Skills = resolved
 		if err := tx.Create(proj).Error; err != nil {
 			return err
 		}
@@ -485,7 +607,12 @@ func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Proj
 // UpdateProject saves modified project fields and updates skill associations.
 func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(proj).Error; err != nil {
+		resolved, err := r.resolveSkillsTx(tx, proj.UserID, proj.Skills)
+		if err != nil {
+			return err
+		}
+		proj.Skills = resolved
+		if err := tx.Session(&gorm.Session{FullSaveAssociations: false}).Save(proj).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(proj).Association("Skills").Replace(proj.Skills); err != nil {
@@ -728,6 +855,11 @@ func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*do
 // CreateFact inserts a fact bullet point and increments master revision.
 func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
+		if err != nil {
+			return err
+		}
+		fact.Skills = resolved
 		if err := tx.Create(fact).Error; err != nil {
 			return err
 		}
@@ -738,7 +870,12 @@ func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) e
 // UpdateFact updates fact statements, impact, or skill associations and increments master revision.
 func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(fact).Error; err != nil {
+		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
+		if err != nil {
+			return err
+		}
+		fact.Skills = resolved
+		if err := tx.Session(&gorm.Session{FullSaveAssociations: false}).Save(fact).Error; err != nil {
 			return err
 		}
 		if err := tx.Model(fact).Association("Skills").Replace(fact.Skills); err != nil {
