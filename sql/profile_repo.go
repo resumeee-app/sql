@@ -192,10 +192,12 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 			return err
 		}
 
-		// Re-insert skills
-		for i := range snapshot.Skills {
-			snapshot.Skills[i].UserID = userID
-			if err := tx.Create(&snapshot.Skills[i]).Error; err != nil {
+		// Re-insert skills in batch
+		if len(snapshot.Skills) > 0 {
+			for i := range snapshot.Skills {
+				snapshot.Skills[i].UserID = userID
+			}
+			if err := tx.CreateInBatches(snapshot.Skills, 100).Error; err != nil {
 				return err
 			}
 		}
@@ -233,10 +235,12 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 			}
 		}
 
-		// Re-insert certs
-		for i := range snapshot.Certifications {
-			snapshot.Certifications[i].UserID = userID
-			if err := tx.Create(&snapshot.Certifications[i]).Error; err != nil {
+		// Re-insert certs in batch
+		if len(snapshot.Certifications) > 0 {
+			for i := range snapshot.Certifications {
+				snapshot.Certifications[i].UserID = userID
+			}
+			if err := tx.CreateInBatches(snapshot.Certifications, 100).Error; err != nil {
 				return err
 			}
 		}

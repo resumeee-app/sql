@@ -1,3 +1,5 @@
+// Package sqlite provides SQLite persistence implementations for Resumeee repositories,
+// migrations, pragma configuration, and seed utilities.
 package sqlite
 
 import (
@@ -5,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -17,7 +20,8 @@ import (
 // enables WAL mode, turns on foreign keys, and executes automatic schema migrations.
 func New(dsn string) (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger:      logger.Default.LogMode(logger.Silent),
+		PrepareStmt: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database at %s: %w", dsn, err)
@@ -29,8 +33,13 @@ func New(dsn string) (*gorm.DB, error) {
 	}
 
 	// For in-memory databases with shared cache, pool connections appropriately
-	if strings.Contains(dsn, ":memory:") {
+	if strings.Contains(dsn, ":memory:") || strings.Contains(dsn, "mode=memory") {
 		sqlDB.SetMaxOpenConns(1)
+	} else {
+		sqlDB.SetMaxOpenConns(25)
+		sqlDB.SetMaxIdleConns(5)
+		sqlDB.SetConnMaxLifetime(1 * time.Hour)
+		sqlDB.SetConnMaxIdleTime(15 * time.Minute)
 	}
 
 	// Enforce SQLite pragmas
@@ -78,6 +87,9 @@ func mapError(err error) error {
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("%w: %v", domain.ErrNotFound, err)
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return fmt.Errorf("%w: %v", domain.ErrConflict, err)
 	}
 	return err
 }

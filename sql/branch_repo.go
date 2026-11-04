@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,11 +28,13 @@ func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]d
 	}
 
 	var currentMasterRev int64
-	_ = r.db.WithContext(ctx).
+	if err := r.db.WithContext(ctx).
 		Model(&domain.Profile{}).
 		Where("user_id = ?", userID).
 		Select("master_revision").
-		Scan(&currentMasterRev).Error
+		Scan(&currentMasterRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, mapError(err)
+	}
 
 	for i := range branches {
 		branches[i].IsStale = branches[i].IsStaleRevision(currentMasterRev)
@@ -57,11 +60,13 @@ func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*d
 	}
 
 	var currentMasterRev int64
-	_ = r.db.WithContext(ctx).
+	if err := r.db.WithContext(ctx).
 		Model(&domain.Profile{}).
 		Where("user_id = ?", targetUserID).
 		Select("master_revision").
-		Scan(&currentMasterRev).Error
+		Scan(&currentMasterRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, mapError(err)
+	}
 	branch.IsStale = branch.IsStaleRevision(currentMasterRev)
 
 	return &branch, nil
