@@ -65,7 +65,7 @@ func New(dsn string) (*gorm.DB, error) {
 
 // AutoMigrate migrates all entity tables and join tables defined by domain models.
 func AutoMigrate(ctx context.Context, db *gorm.DB) error {
-	return db.WithContext(ctx).AutoMigrate(
+	if err := db.WithContext(ctx).AutoMigrate(
 		&domain.Profile{},
 		&domain.Skill{},
 		&domain.WorkExperience{},
@@ -77,7 +77,23 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&domain.TemplateSet{},
 		&domain.Branch{},
 		&domain.BranchVersion{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Ensure secondary indexes on join tables for reverse lookups by skill_id
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_experience_skills_skill_id ON experience_skills (skill_id);",
+		"CREATE INDEX IF NOT EXISTS idx_project_skills_skill_id ON project_skills (skill_id);",
+		"CREATE INDEX IF NOT EXISTS idx_fact_skills_skill_id ON fact_skills (skill_id);",
+	}
+	for _, idx := range indexes {
+		if err := db.WithContext(ctx).Exec(idx).Error; err != nil {
+			return fmt.Errorf("creating join table index: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // mapError converts GORM errors into canonical domain errors.

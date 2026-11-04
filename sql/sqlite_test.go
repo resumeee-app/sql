@@ -1051,4 +1051,29 @@ func TestProfileRepository_AssociationSkillsPurge(t *testing.T) {
 	}
 }
 
+func TestDB_SecondaryAndJoinTableIndexes(t *testing.T) {
+	db, err := sqlite.New("file:indexes_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	requiredIndexes := []string{
+		"idx_experience_skills_skill_id",
+		"idx_project_skills_skill_id",
+		"idx_fact_skills_skill_id",
+	}
+
+	for _, idxName := range requiredIndexes {
+		var count int
+		query := "SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?"
+		if err := db.Raw(query, idxName).Scan(&count).Error; err != nil {
+			t.Fatalf("failed to query index %s: %v", idxName, err)
+		}
+		if count != 1 {
+			t.Errorf("expected index %s to exist, count=%d", idxName, count)
+		}
+	}
+}
+
+
 
