@@ -77,6 +77,7 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&domain.TemplateSet{},
 		&domain.Branch{},
 		&domain.BranchVersion{},
+		&domain.PDFParseJob{},
 	); err != nil {
 		return err
 	}
