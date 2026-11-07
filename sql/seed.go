@@ -136,6 +136,7 @@ func SeedDefaultData(ctx context.Context, db *gorm.DB, defaultUserID ...string) 
 				verID := "ver-default-" + targetUserID
 				ver := domain.BranchVersion{
 					ID:                 verID,
+					ResumeID:           defaultBranch.ID,
 					BranchID:           defaultBranch.ID,
 					VersionNumber:      1,
 					Status:             domain.VersionStatusCompleted,
@@ -174,6 +175,8 @@ func getBuiltinTemplateSets() []domain.TemplateSet {
 // getBuiltinPresets returns immutable system presets for 1-page tech resumes and immigration compliance CVs.
 func getBuiltinPresets(userID string) []domain.Preset {
 	now := time.Now().UTC()
+	themeStd := TemplateStandardCleanID
+	themeCV := TemplateDetailedImmigrationCVID
 	return []domain.Preset{
 		{
 			ID:                 Preset1PageTechResumeID,
@@ -181,6 +184,7 @@ func getBuiltinPresets(userID string) []domain.Preset {
 			Name:               "1-Page Tech Resume",
 			Description:        "Concise tech resume format emphasizing recent high-impact metrics and key skills.",
 			SystemInstructions: "Focus strictly on high-impact engineering accomplishments, quantitative outcomes, and relevant technical skill groups. Ensure concise bullet formatting suitable for a 1-page tech resume.",
+			SuggestedThemeID:   &themeStd,
 			TemplateSetID:      TemplateStandardCleanID,
 			IncludeAdminFields: false,
 			CreatedAt:          now,
@@ -192,6 +196,7 @@ func getBuiltinPresets(userID string) []domain.Preset {
 			Name:               "Immigration Full History CV",
 			Description:        "Unabridged career history format for audit, visa, and immigration compliance.",
 			SystemInstructions: "Include full, unabridged employment and academic history. Maintain detailed hours per week, company location and verification contacts, supervisor contact information, and full explanatory duty summaries.",
+			SuggestedThemeID:   &themeCV,
 			TemplateSetID:      TemplateDetailedImmigrationCVID,
 			IncludeAdminFields: true,
 			CreatedAt:          now,

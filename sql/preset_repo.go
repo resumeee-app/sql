@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -41,11 +42,21 @@ func (r *presetRepository) CreatePreset(ctx context.Context, preset *domain.Pres
 
 // UpdatePreset saves changes to an existing preset record.
 func (r *presetRepository) UpdatePreset(ctx context.Context, preset *domain.Preset) error {
+	if preset != nil && (preset.IsBuiltIn() || strings.HasPrefix(preset.ID, "builtin-")) {
+		return domain.ErrStrategyImmutable
+	}
 	return mapError(r.db.WithContext(ctx).Save(preset).Error)
 }
 
 // DeletePreset removes a preset record by user and preset ID.
 func (r *presetRepository) DeletePreset(ctx context.Context, userID, id string) error {
+	if strings.HasPrefix(id, "builtin-") || userID == "system" {
+		return domain.ErrStrategyImmutable
+	}
+	existing, err := r.GetPreset(ctx, userID, id)
+	if err == nil && existing != nil && (existing.IsBuiltIn() || strings.HasPrefix(existing.ID, "builtin-")) {
+		return domain.ErrStrategyImmutable
+	}
 	res := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Preset{})
 	if res.Error != nil {
 		return mapError(res.Error)

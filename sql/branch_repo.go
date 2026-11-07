@@ -99,7 +99,7 @@ func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) 
 		}
 
 		// Clean up branch versions
-		if err := tx.Where("branch_id = ?", id).Delete(&domain.BranchVersion{}).Error; err != nil {
+		if err := tx.Where("resume_id = ? OR branch_id = ?", id, id).Delete(&domain.BranchVersion{}).Error; err != nil {
 			return err
 		}
 		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Branch{})
@@ -116,8 +116,19 @@ func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) 
 // CreateVersion atomically assigns a sequential version number and creates a new branch version.
 func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.BranchVersion) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		targetID := version.ResumeID
+		if targetID == "" {
+			targetID = version.BranchID
+		}
+		if version.ResumeID == "" {
+			version.ResumeID = targetID
+		}
+		if version.BranchID == "" {
+			version.BranchID = targetID
+		}
+
 		var maxVer int
-		row := tx.Raw("SELECT COALESCE(MAX(version_number), 0) FROM branch_versions WHERE branch_id = ?", version.BranchID).Row()
+		row := tx.Raw("SELECT COALESCE(MAX(version_number), 0) FROM resume_versions WHERE resume_id = ? OR branch_id = ?", targetID, targetID).Row()
 		if err := row.Scan(&maxVer); err != nil {
 			return err
 		}
@@ -134,17 +145,30 @@ func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.Br
 	})
 }
 
+func syncVersionIDs(v *domain.BranchVersion) {
+	if v == nil {
+		return
+	}
+	if v.ResumeID == "" && v.BranchID != "" {
+		v.ResumeID = v.BranchID
+	}
+	if v.BranchID == "" && v.ResumeID != "" {
+		v.BranchID = v.ResumeID
+	}
+}
+
 // GetVersion retrieves a branch version by version UUID, optionally restricted to a specific branch.
 func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID string) (*domain.BranchVersion, error) {
 	var version domain.BranchVersion
 	query := r.db.WithContext(ctx).Where("id = ?", versionID)
 	if branchID != "" {
-		query = query.Where("branch_id = ?", branchID)
+		query = query.Where("resume_id = ? OR branch_id = ?", branchID, branchID)
 	}
 	err := query.First(&version).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
+	syncVersionIDs(&version)
 	return &version, nil
 }
 
@@ -152,11 +176,12 @@ func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID s
 func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID string, versionNumber int) (*domain.BranchVersion, error) {
 	var version domain.BranchVersion
 	err := r.db.WithContext(ctx).
-		Where("branch_id = ? AND version_number = ?", branchID, versionNumber).
+		Where("(resume_id = ? OR branch_id = ?) AND version_number = ?", branchID, branchID, versionNumber).
 		First(&version).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
+	syncVersionIDs(&version)
 	return &version, nil
 }
 
@@ -164,9 +189,14 @@ func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID stri
 func (r *branchRepository) ListVersions(ctx context.Context, branchID string) ([]domain.BranchVersion, error) {
 	var versions []domain.BranchVersion
 	err := r.db.WithContext(ctx).
-		Where("branch_id = ?", branchID).
+		Where("resume_id = ? OR branch_id = ?", branchID, branchID).
 		Order("version_number ASC").
 		Find(&versions).Error
+	if err == nil {
+		for i := range versions {
+			syncVersionIDs(&versions[i])
+		}
+	}
 	return versions, mapError(err)
 }
 
@@ -193,6 +223,17 @@ func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID st
 // CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_master_revision.
 func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.BranchVersion) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		parentID := version.ResumeID
+		if parentID == "" {
+			parentID = version.BranchID
+		}
+		if version.ResumeID == "" {
+			version.ResumeID = parentID
+		}
+		if version.BranchID == "" {
+			version.BranchID = parentID
+		}
+
 		now := time.Now().UTC()
 		version.CompletedAt = &now
 		if version.Status == "" {
@@ -204,7 +245,7 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.
 
 		// Update active version pointer and last synced revision on parent branch
 		return tx.Model(&domain.Branch{}).
-			Where("id = ?", version.BranchID).
+			Where("id = ?", parentID).
 			Updates(map[string]any{
 				"active_version_id":            version.ID,
 				"last_synced_master_revision":  version.MasterRevisionUsed,
