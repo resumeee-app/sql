@@ -1,4 +1,3 @@
-// Package sqlite provides SQLite persistence implementations for Resumeee repositories.
 package sqlite
 
 import (
