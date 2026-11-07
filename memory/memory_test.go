@@ -60,7 +60,7 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		UserID:    userID,
 		Company:   "Acme Corp",
 		RoleTitle: "Staff Engineer",
-		StartDate: "2024-01-01",
+		StartDate: domain.NewDate(2024, 1, 1),
 	}
 	if err := store.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience: %v", err)
@@ -104,7 +104,7 @@ func TestProfileRepository_FactsAndSnapshot(t *testing.T) {
 		UserID:    userID,
 		Company:   "Cloud Scale Inc",
 		RoleTitle: "Backend Lead",
-		StartDate: "2023-01-01",
+		StartDate: domain.NewDate(2023, 1, 1),
 		Skills:    []domain.Skill{*skill1},
 	}
 	if err := store.CreateExperience(ctx, exp); err != nil {
@@ -168,7 +168,7 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 		UserID:    userID,
 		Company:   "NewCo",
 		RoleTitle: "Director",
-		StartDate: "2024-06-01",
+		StartDate: domain.NewDate(2024, 6, 1),
 		Skills:    []domain.Skill{newSkill},
 	}
 	newFact := domain.Fact{
@@ -501,7 +501,7 @@ func TestMemoryStore_ConcurrentAccess(t *testing.T) {
 					UserID:    userID,
 					Company:   fmt.Sprintf("Company-%d", w),
 					RoleTitle: "Dev",
-					StartDate: "2024-01-01",
+					StartDate: domain.NewDate(2024, 1, 1),
 				}
 				if err := store.CreateExperience(ctx, exp); err != nil {
 					errCh <- fmt.Errorf("create experience error: %w", err)

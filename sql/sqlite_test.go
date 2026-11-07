@@ -111,7 +111,7 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		Company:        "Acme Corp",
 		RoleTitle:      "Lead Architect",
 		EmploymentType: domain.EmploymentTypeFullTime,
-		StartDate:      "2022-01-01",
+		StartDate:      domain.NewDate(2022, 1, 1),
 		Skills:         []domain.Skill{*skill},
 		CompanyContact: &domain.ContactDetail{Type: domain.ContactTypeEmail, Value: "hr@acme.com"},
 	}
@@ -182,7 +182,7 @@ func TestProfileRepository_PolymorphicFactsAndSnapshot(t *testing.T) {
 		UserID:    userID,
 		Company:   "Tech Co",
 		RoleTitle: "Senior Engineer",
-		StartDate: "2023-01-01",
+		StartDate: domain.NewDate(2023, 1, 1),
 		Skills:    []domain.Skill{skillGo, skillGorm},
 	}
 	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
@@ -206,7 +206,7 @@ func TestProfileRepository_PolymorphicFactsAndSnapshot(t *testing.T) {
 		ID:        "proj-snap",
 		UserID:    userID,
 		Name:      "Resumeee Engine",
-		StartDate: "2024-01-01",
+		StartDate: domain.DatePtr(domain.NewDate(2024, 1, 1)),
 		Skills:    []domain.Skill{skillGo},
 	}
 	if err := profileRepo.CreateProject(ctx, proj); err != nil {
@@ -455,7 +455,7 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 				UserID:    userID,
 				Company:   "Startup Inc",
 				RoleTitle: "Founding Engineer",
-				StartDate: "2020-01-01",
+				StartDate: domain.NewDate(2020, 1, 1),
 			},
 		},
 		Projects: []domain.Project{
@@ -463,7 +463,7 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 				ID:        "proj-1",
 				UserID:    userID,
 				Name:      "Distributed Store",
-				StartDate: "2021-01-01",
+				StartDate: domain.DatePtr(domain.NewDate(2021, 1, 1)),
 			},
 		},
 		Education: []domain.Education{
@@ -530,7 +530,7 @@ func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 				UserID:    userID,
 				Company:   "Tech Corp",
 				RoleTitle: "Backend Lead",
-				StartDate: "2020-01-01",
+				StartDate: domain.NewDate(2020, 1, 1),
 				Skills:    []domain.Skill{skillTop, skillExp},
 				Facts: []domain.Fact{
 					{
@@ -549,7 +549,7 @@ func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 				ID:        "proj-nested-1",
 				UserID:    userID,
 				Name:      "Web Console",
-				StartDate: "2021-01-01",
+				StartDate: domain.DatePtr(domain.NewDate(2021, 1, 1)),
 				Skills:    []domain.Skill{skillProj},
 			},
 		},
@@ -800,7 +800,7 @@ func TestProfileRepository_FullEntityCRUD(t *testing.T) {
 		UserID:    userID,
 		Company:   "Startup Labs",
 		RoleTitle: "Engineer",
-		StartDate: "2021-01-01",
+		StartDate: domain.NewDate(2021, 1, 1),
 	}
 	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("create exp failed: %v", err)
@@ -1079,7 +1079,7 @@ func TestProfileRepository_AssociationSkillsPurge(t *testing.T) {
 		UserID:    userID,
 		Company:   "Acme",
 		RoleTitle: "Engineer",
-		StartDate: "2020-01-01",
+		StartDate: domain.NewDate(2020, 1, 1),
 		Skills:    []domain.Skill{*s1, *s2, *s3},
 	}
 	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
@@ -1158,7 +1158,7 @@ func TestProfileRepository_SkillResolution(t *testing.T) {
 		UserID:    userID,
 		Company:   "Tech Innovators",
 		RoleTitle: "Staff Engineer",
-		StartDate: "2023-01-01",
+		StartDate: domain.NewDate(2023, 1, 1),
 		Skills: []domain.Skill{
 			{Name: "PostgreSQL"},
 			{Name: "Go"},
