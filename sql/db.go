@@ -79,6 +79,9 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&domain.Branch{},
 		&domain.BranchVersion{},
 		&domain.PDFParseJob{},
+		&domain.User{},
+		&domain.TenantQuota{},
+		&domain.LLMUsageRecord{},
 	); err != nil {
 		return err
 	}
@@ -88,6 +91,9 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_experience_skills_skill_id ON experience_skills (skill_id);",
 		"CREATE INDEX IF NOT EXISTS idx_project_skills_skill_id ON project_skills (skill_id);",
 		"CREATE INDEX IF NOT EXISTS idx_fact_skills_skill_id ON fact_skills (skill_id);",
+		"CREATE INDEX IF NOT EXISTS idx_skills_global ON skills (is_global);",
+		"CREATE INDEX IF NOT EXISTS idx_resume_versions_user_id ON resume_versions (user_id);",
+		"CREATE INDEX IF NOT EXISTS idx_skills_slug ON skills (slug);",
 	}
 	for _, idx := range indexes {
 		if err := db.WithContext(ctx).Exec(idx).Error; err != nil {
@@ -161,6 +167,7 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (rep
 		TemplateRepo: NewTemplateRepository(db),
 		BranchRepo:   NewBranchRepository(db),
 		PDFJobRepo:   NewPDFParseJobRepository(db),
+		QuotaRepo:    NewQuotaRepository(db),
 		Closer:       closer,
 	}, nil
 }

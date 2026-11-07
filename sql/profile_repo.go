@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -191,17 +192,21 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		if err := tx.Where("user_id = ?", userID).Delete(&domain.Certification{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.Skill{}).Error; err != nil {
+		if err := tx.Where("user_id = ? AND is_global = ?", userID, false).Delete(&domain.Skill{}).Error; err != nil {
 			return err
 		}
 
-		// Re-insert skills in batch using all consolidated skills across the snapshot
+		// Re-insert custom skills in batch (exclude global skills)
 		allSkills := snapshot.AllSkills()
-		if len(allSkills) > 0 {
-			for i := range allSkills {
-				allSkills[i].UserID = userID
+		var customSkills []domain.Skill
+		for _, s := range allSkills {
+			if !s.IsGlobal && s.UserID != "system" {
+				s.UserID = userID
+				customSkills = append(customSkills, s)
 			}
-			if err := tx.CreateInBatches(allSkills, 100).Error; err != nil {
+		}
+		if len(customSkills) > 0 {
+			if err := tx.CreateInBatches(customSkills, 100).Error; err != nil {
 				return err
 			}
 		}
@@ -277,15 +282,22 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 }
 
 // Skills CRUD
-// ListSkills returns all skills registered for the specified user.
+// ListSkills returns all skills registered for the specified user plus system global skills.
 func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]domain.Skill, error) {
 	var skills []domain.Skill
-	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&skills).Error
+	err := r.db.WithContext(ctx).Where("user_id = ? OR is_global = ?", userID, true).Find(&skills).Error
+	return skills, mapError(err)
+}
+
+// ListGlobalSkills returns all system-seeded global skills.
+func (r *profileRepository) ListGlobalSkills(ctx context.Context) ([]domain.Skill, error) {
+	var skills []domain.Skill
+	err := r.db.WithContext(ctx).Where("is_global = ?", true).Find(&skills).Error
 	return skills, mapError(err)
 }
 
 // GetSkill retrieves a skill record by either its canonical UUID or its compact short_id.
-// It scopes the lookup strictly to the authenticated userID to enforce multi-tenant isolation.
+// It scopes the lookup to the authenticated userID or system global skills.
 //
 // Parameters:
 //   - ctx: Context for database cancellation and timeout propagation.
@@ -296,7 +308,7 @@ func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]do
 //   - Pointer to domain.Skill if found, or domain.ErrNotFound if no matching record exists.
 func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*domain.Skill, error) {
 	var skill domain.Skill
-	err := r.db.WithContext(ctx).Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).First(&skill).Error
+	err := r.db.WithContext(ctx).Where("(user_id = ? OR is_global = ?) AND (id = ? OR short_id = ?)", userID, true, id, id).First(&skill).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -305,16 +317,34 @@ func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*d
 
 // CreateSkill creates a new skill and increments the master revision.
 func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill) error {
+	if skill.IsGlobal && skill.UserID != "system" {
+		return fmt.Errorf("%w: only system may create global skills", domain.ErrForbidden)
+	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(skill).Error; err != nil {
 			return err
 		}
-		return r.incrementRevisionTx(tx, skill.UserID)
+		if skill.UserID != "system" {
+			return r.incrementRevisionTx(tx, skill.UserID)
+		}
+		return nil
 	})
 }
 
 // UpdateSkill modifies a skill and increments the master revision.
+// System-seeded global skills cannot be modified.
 func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill) error {
+	var existing domain.Skill
+	if err := r.db.WithContext(ctx).Where("id = ?", skill.ID).First(&existing).Error; err != nil {
+		return mapError(err)
+	}
+	if existing.IsGlobal {
+		return domain.ErrGlobalSkillImmutable
+	}
+	if existing.UserID != skill.UserID {
+		return domain.ErrForbidden
+	}
+
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(skill).Error; err != nil {
 			return err
@@ -324,7 +354,19 @@ func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill
 }
 
 // DeleteSkill deletes a skill and cleanups join tables before incrementing master revision.
+// System-seeded global skills cannot be deleted.
 func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) error {
+	var existing domain.Skill
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		return mapError(err)
+	}
+	if existing.IsGlobal {
+		return domain.ErrGlobalSkillImmutable
+	}
+	if existing.UserID != userID {
+		return domain.ErrForbidden
+	}
+
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clean up join tables where skill is referenced
 		if err := tx.Exec("DELETE FROM experience_skills WHERE skill_id = ?", id).Error; err != nil {
@@ -417,25 +459,25 @@ func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkill
 
 		var found domain.Skill
 
-		// 1. Match existing skill by ID
+		// 1. Match existing skill by ID (user skill OR global skill)
 		if rawID != "" {
-			err := tx.Where("user_id = ? AND id = ?", userID, rawID).First(&found).Error
+			err := tx.Where("(user_id = ? OR is_global = ?) AND id = ?", userID, true, rawID).First(&found).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, err
 			}
 		}
 
-		// 2. Match existing skill by ShortID
+		// 2. Match existing skill by ShortID (user skill OR global skill)
 		if found.ID == "" && rawShortID != "" {
-			err := tx.Where("user_id = ? AND short_id = ?", userID, rawShortID).First(&found).Error
+			err := tx.Where("(user_id = ? OR is_global = ?) AND short_id = ?", userID, true, rawShortID).First(&found).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, err
 			}
 		}
 
-		// 3. Match existing skill by case-insensitive Name
+		// 3. Match existing skill by case-insensitive Name or Slug (user skill OR global skill)
 		if found.ID == "" && nameCandidate != "" {
-			err := tx.Where("user_id = ? AND LOWER(name) = LOWER(?)", userID, nameCandidate).First(&found).Error
+			err := tx.Where("(user_id = ? OR is_global = ?) AND (LOWER(name) = LOWER(?) OR slug = LOWER(?))", userID, true, nameCandidate, nameCandidate).First(&found).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, err
 			}

@@ -126,6 +126,12 @@ func (r *branchRepository) CreateVersion(ctx context.Context, version *domain.Br
 		if version.BranchID == "" {
 			version.BranchID = targetID
 		}
+		if version.UserID == "" && targetID != "" {
+			var b domain.Branch
+			if err := tx.Where("id = ?", targetID).Select("user_id").First(&b).Error; err == nil {
+				version.UserID = b.UserID
+			}
+		}
 
 		var maxVer int
 		row := tx.Raw("SELECT COALESCE(MAX(version_number), 0) FROM resume_versions WHERE resume_id = ? OR branch_id = ?", targetID, targetID).Row()

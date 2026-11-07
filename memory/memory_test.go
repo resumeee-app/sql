@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"resumeee/internal/domain"
 	"resumeee/internal/renderer"
@@ -707,6 +708,264 @@ func TestMemoryStore_ErrorSentinels(t *testing.T) {
 		}
 		if err := store.CreatePreset(ctx, nil); !errors.Is(err, domain.ErrValidation) {
 			t.Errorf("expected ErrValidation on nil preset, got: %v", err)
+		}
+	})
+}
+
+func TestMemoryStore_QuotaLifecycle(t *testing.T) {
+	store := setupTestStore(t)
+	ctx := context.Background()
+	userID := "quota-user-1"
+
+	// 1. Initial GetQuota creates default quota
+	q, err := store.GetQuota(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get quota: %v", err)
+	}
+	if q.DailyRequestsUsed != 0 || q.MonthlyTokensUsed != 0 {
+		t.Fatalf("expected 0 usage, got daily=%d monthly=%d", q.DailyRequestsUsed, q.MonthlyTokensUsed)
+	}
+
+	// 2. ReserveQuota success
+	rec, err := store.ReserveQuota(ctx, userID, domain.OperationResumeTailoring, 1500, 2, 5000)
+	if err != nil {
+		t.Fatalf("failed to reserve quota: %v", err)
+	}
+	if rec.Status != domain.ReservationStatusPending || rec.EstimatedTokens != 1500 {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+
+	// 3. CommitUsage
+	usage := domain.TokenUsage{
+		PromptTokens:     500,
+		CompletionTokens: 1200,
+		TotalTokens:      1700,
+	}
+	if err := store.CommitUsage(ctx, rec.ID, usage); err != nil {
+		t.Fatalf("failed to commit usage: %v", err)
+	}
+
+	// Verify committed record
+	records, err := store.ListUsageRecords(ctx, userID, 10)
+	if err != nil {
+		t.Fatalf("failed to list usage records: %v", err)
+	}
+	if len(records) != 1 || records[0].Status != domain.ReservationStatusCommitted || records[0].TotalTokens != 1700 {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+
+	// 4. Reserve second quota reaching daily limit
+	rec2, err := store.ReserveQuota(ctx, userID, domain.OperationGapAnalysis, 1000, 2, 5000)
+	if err != nil {
+		t.Fatalf("failed to reserve second quota: %v", err)
+	}
+
+	// 5. Third reservation fails with ErrQuotaExceeded
+	_, err = store.ReserveQuota(ctx, userID, domain.OperationPDFParse, 500, 2, 5000)
+	if !errors.Is(err, domain.ErrQuotaExceeded) {
+		t.Fatalf("expected ErrQuotaExceeded on exceeding daily request limit, got %v", err)
+	}
+
+	// 6. Release second quota
+	if err := store.ReleaseQuota(ctx, rec2.ID, "cancelled"); err != nil {
+		t.Fatalf("failed to release quota: %v", err)
+	}
+
+	// 7. Verify reservation can now succeed after release
+	rec3, err := store.ReserveQuota(ctx, userID, domain.OperationPDFParse, 500, 2, 5000)
+	if err != nil {
+		t.Fatalf("expected reservation to succeed after release, got %v", err)
+	}
+	if rec3.ID == "" {
+		t.Fatal("expected non-empty reservation ID")
+	}
+
+	// 8. Releasing non-existent reservation returns ErrNotFound
+	if err := store.ReleaseQuota(ctx, "non-existent-id", "err"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown reservation, got %v", err)
+	}
+}
+
+func TestMemoryStore_GlobalSkillsAndImmutability(t *testing.T) {
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// 1. Seed global skill
+	globalSkill := &domain.Skill{
+		ID:       "global-golang",
+		UserID:   "system",
+		Name:     "Go",
+		Slug:     "go",
+		IsGlobal: true,
+	}
+	if err := store.CreateSkill(ctx, globalSkill); err != nil {
+		t.Fatalf("failed to create global skill: %v", err)
+	}
+
+	// 2. User skill
+	userSkill := &domain.Skill{
+		ID:       "user-skill-1",
+		UserID:   "user-a",
+		Name:     "Docker",
+		Slug:     "docker",
+		IsGlobal: false,
+	}
+	if err := store.CreateSkill(ctx, userSkill); err != nil {
+		t.Fatalf("failed to create user skill: %v", err)
+	}
+
+	// 3. ListGlobalSkills returns global skills
+	globals, err := store.ListGlobalSkills(ctx)
+	if err != nil {
+		t.Fatalf("failed to list global skills: %v", err)
+	}
+	if len(globals) != 1 || globals[0].ID != "global-golang" {
+		t.Fatalf("expected 1 global skill, got %d (%+v)", len(globals), globals)
+	}
+
+	// 4. Deleting global skill returns ErrGlobalSkillImmutable
+	if err := store.DeleteSkill(ctx, "user-a", "global-golang"); !errors.Is(err, domain.ErrGlobalSkillImmutable) {
+		t.Fatalf("expected ErrGlobalSkillImmutable when deleting global skill, got %v", err)
+	}
+
+	// 5. Deleting another user's skill returns ErrForbidden
+	if err := store.DeleteSkill(ctx, "user-b", "user-skill-1"); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("expected ErrForbidden when deleting another tenant's skill, got %v", err)
+	}
+
+	// 6. Deleting non-existent skill returns ErrNotFound
+	if err := store.DeleteSkill(ctx, "user-a", "unknown-skill"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown skill, got %v", err)
+	}
+
+	// 7. Legitimate owner can delete user skill
+	if err := store.DeleteSkill(ctx, "user-a", "user-skill-1"); err != nil {
+		t.Fatalf("expected success deleting own skill, got %v", err)
+	}
+}
+
+func TestMemoryStore_CleanupCompletedJobs(t *testing.T) {
+	store := setupTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	completedAt := now.Add(-48 * time.Hour)
+	oldCompleted := &domain.PDFParseJob{
+		ID:          "job-old-completed",
+		UserID:      "user-1",
+		Status:      domain.PDFParseJobStatusCompleted,
+		CreatedAt:   now.Add(-48 * time.Hour),
+		UpdatedAt:   now.Add(-48 * time.Hour),
+		CompletedAt: &completedAt,
+	}
+	oldFailed := &domain.PDFParseJob{
+		ID:          "job-old-failed",
+		UserID:      "user-1",
+		Status:      domain.PDFParseJobStatusFailed,
+		CreatedAt:   now.Add(-48 * time.Hour),
+		UpdatedAt:   now.Add(-48 * time.Hour),
+		CompletedAt: &completedAt,
+	}
+	recentCompleted := &domain.PDFParseJob{
+		ID:        "job-recent-completed",
+		UserID:    "user-1",
+		Status:    domain.PDFParseJobStatusCompleted,
+		CreatedAt: now.Add(-1 * time.Hour),
+		UpdatedAt: now.Add(-1 * time.Hour),
+	}
+	oldPending := &domain.PDFParseJob{
+		ID:        "job-old-pending",
+		UserID:    "user-1",
+		Status:    domain.PDFParseJobStatusPending,
+		CreatedAt: now.Add(-48 * time.Hour),
+		UpdatedAt: now.Add(-48 * time.Hour),
+	}
+
+	for _, j := range []*domain.PDFParseJob{oldCompleted, oldFailed, recentCompleted, oldPending} {
+		if err := store.CreateJob(ctx, j); err != nil {
+			t.Fatalf("failed to create job %s: %v", j.ID, err)
+		}
+	}
+
+	// Cleanup jobs older than 24 hours
+	if err := store.CleanupCompletedJobs(ctx, "user-1", 24*time.Hour); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+
+	// Old pending and recent completed must remain
+	if _, err := store.GetJob(ctx, "user-1", "job-old-pending"); err != nil {
+		t.Errorf("expected old pending job to be preserved, got error: %v", err)
+	}
+	if _, err := store.GetJob(ctx, "user-1", "job-recent-completed"); err != nil {
+		t.Errorf("expected recent completed job to be preserved, got error: %v", err)
+	}
+	// Old completed and failed must be gone
+	if _, err := store.GetJob(ctx, "user-1", "job-old-completed"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected old completed job to be purged, got %v", err)
+	}
+	if _, err := store.GetJob(ctx, "user-1", "job-old-failed"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected old failed job to be purged, got %v", err)
+	}
+}
+
+func TestMemoryStore_TemplateImmutability(t *testing.T) {
+	store := setupTestStore(t)
+	ctx := context.Background()
+
+	// Seed built-in template
+	builtIn := &domain.TemplateSet{
+		ID:               "builtin-standard",
+		UserID:           "system",
+		Name:             "Builtin Standard",
+		IsBuiltIn:        true,
+		HTMLTemplate:     "<div>{{.Profile.FullName}}</div>",
+		MarkdownTemplate: "# {{.Profile.FullName}}",
+		TextTemplate:     "{{.Profile.FullName}}",
+	}
+	if err := store.CreateTemplate(ctx, builtIn); err != nil {
+		t.Fatalf("failed to create built-in template: %v", err)
+	}
+
+	// User custom template
+	custom := &domain.TemplateSet{
+		ID:               "custom-tmpl-1",
+		UserID:           "user-a",
+		Name:             "Custom Template",
+		IsBuiltIn:        false,
+		HTMLTemplate:     "<div>{{.Profile.FullName}}</div>",
+		MarkdownTemplate: "# {{.Profile.FullName}}",
+		TextTemplate:     "{{.Profile.FullName}}",
+	}
+	if err := store.CreateTemplate(ctx, custom); err != nil {
+		t.Fatalf("failed to create custom template: %v", err)
+	}
+
+	t.Run("Update built-in template returns ErrStrategyImmutable", func(t *testing.T) {
+		mutation := *builtIn
+		mutation.Name = "Poisoned Name"
+		mutation.UserID = "user-a"
+		if err := store.UpdateTemplate(ctx, &mutation); !errors.Is(err, domain.ErrStrategyImmutable) {
+			t.Fatalf("expected ErrStrategyImmutable when updating built-in template, got %v", err)
+		}
+	})
+
+	t.Run("Delete built-in template returns ErrStrategyImmutable", func(t *testing.T) {
+		if err := store.DeleteTemplate(ctx, "user-a", "builtin-standard"); !errors.Is(err, domain.ErrStrategyImmutable) {
+			t.Fatalf("expected ErrStrategyImmutable when deleting built-in template, got %v", err)
+		}
+	})
+
+	t.Run("Update another user's template returns ErrForbidden", func(t *testing.T) {
+		mutation := *custom
+		mutation.UserID = "user-b"
+		if err := store.UpdateTemplate(ctx, &mutation); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("expected ErrForbidden when updating another user's template, got %v", err)
+		}
+	})
+
+	t.Run("Delete another user's template returns ErrForbidden", func(t *testing.T) {
+		if err := store.DeleteTemplate(ctx, "user-b", "custom-tmpl-1"); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("expected ErrForbidden when deleting another user's template, got %v", err)
 		}
 	})
 }

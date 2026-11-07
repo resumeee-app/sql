@@ -44,6 +44,8 @@ type Store struct {
 	branches       map[string]*domain.Branch
 	versions       map[string]*domain.BranchVersion
 	pdfJobs        map[string]*domain.PDFParseJob
+	quotas         map[string]*domain.TenantQuota
+	usageRecords   map[string]*domain.LLMUsageRecord
 }
 
 // New constructs an empty, thread-safe in-memory store.
@@ -61,6 +63,8 @@ func New() *Store {
 		branches:       make(map[string]*domain.Branch),
 		versions:       make(map[string]*domain.BranchVersion),
 		pdfJobs:        make(map[string]*domain.PDFParseJob),
+		quotas:         make(map[string]*domain.TenantQuota),
+		usageRecords:   make(map[string]*domain.LLMUsageRecord),
 	}
 }
 
@@ -92,6 +96,9 @@ func (s *Store) Template() domain.TemplateRepository { return s }
 // PDFJob returns this store as domain.PDFParseJobRepository.
 func (s *Store) PDFJob() domain.PDFParseJobRepository { return s }
 
+// Quota returns this store as domain.QuotaRepository.
+func (s *Store) Quota() domain.QuotaRepository { return s }
+
 // Close releases any allocated store resources.
 func (s *Store) Close() error { return nil }
 
@@ -103,6 +110,7 @@ func (s *Store) StoreBundle() *repository.StoreBundle {
 		PresetRepo:   s,
 		TemplateRepo: s,
 		PDFJobRepo:   s,
+		QuotaRepo:    s,
 		Closer:       s.Close,
 	}
 }
@@ -269,14 +277,16 @@ func (s *Store) ReplaceCareerGraph(_ context.Context, userID string, snapshot *d
 		}
 	}
 	for id, sk := range s.skills {
-		if sk.UserID == userID {
+		if sk.UserID == userID && !sk.IsGlobal {
 			delete(s.skills, id)
 		}
 	}
 
 	for _, sk := range snapshot.AllSkills() {
-		sk.UserID = userID
-		s.skills[sk.ID] = clone(&sk)
+		if !sk.IsGlobal && sk.UserID != "system" {
+			sk.UserID = userID
+			s.skills[sk.ID] = clone(&sk)
+		}
 	}
 	for _, exp := range snapshot.Experiences {
 		exp.UserID = userID
@@ -338,7 +348,20 @@ func (s *Store) ListSkills(_ context.Context, userID string) ([]domain.Skill, er
 
 	var list []domain.Skill
 	for _, sk := range s.skills {
-		if sk.UserID == userID {
+		if sk.UserID == userID || sk.IsGlobal {
+			list = append(list, *clone(sk))
+		}
+	}
+	return list, nil
+}
+
+func (s *Store) ListGlobalSkills(_ context.Context) ([]domain.Skill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var list []domain.Skill
+	for _, sk := range s.skills {
+		if sk.IsGlobal {
 			list = append(list, *clone(sk))
 		}
 	}
@@ -350,7 +373,7 @@ func (s *Store) GetSkill(_ context.Context, userID, id string) (*domain.Skill, e
 	defer s.mu.RUnlock()
 
 	for _, sk := range s.skills {
-		if sk.UserID == userID && (sk.ID == id || sk.ShortID == id) {
+		if (sk.UserID == userID || sk.IsGlobal) && (sk.ID == id || sk.ShortID == id) {
 			return clone(sk), nil
 		}
 	}
@@ -361,11 +384,16 @@ func (s *Store) CreateSkill(_ context.Context, skill *domain.Skill) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if skill.IsGlobal && skill.UserID != "system" {
+		return fmt.Errorf("%w: only system may create global skills", domain.ErrForbidden)
+	}
 	if _, exists := s.skills[skill.ID]; exists {
 		return domain.ErrConflict
 	}
 	s.skills[skill.ID] = clone(skill)
-	s.incrementRevisionLocked(skill.UserID)
+	if skill.UserID != "system" {
+		s.incrementRevisionLocked(skill.UserID)
+	}
 	return nil
 }
 
@@ -374,8 +402,14 @@ func (s *Store) UpdateSkill(_ context.Context, skill *domain.Skill) error {
 	defer s.mu.Unlock()
 
 	existing, exists := s.skills[skill.ID]
-	if !exists || existing.UserID != skill.UserID {
+	if !exists {
 		return domain.ErrNotFound
+	}
+	if existing.IsGlobal {
+		return domain.ErrGlobalSkillImmutable
+	}
+	if existing.UserID != skill.UserID {
+		return domain.ErrForbidden
 	}
 	s.skills[skill.ID] = clone(skill)
 	s.incrementRevisionLocked(skill.UserID)
@@ -387,8 +421,14 @@ func (s *Store) DeleteSkill(_ context.Context, userID, id string) error {
 	defer s.mu.Unlock()
 
 	existing, exists := s.skills[id]
-	if !exists || existing.UserID != userID {
+	if !exists {
 		return domain.ErrNotFound
+	}
+	if existing.IsGlobal {
+		return domain.ErrGlobalSkillImmutable
+	}
+	if existing.UserID != userID {
+		return domain.ErrForbidden
 	}
 	delete(s.skills, id)
 	s.incrementRevisionLocked(userID)
@@ -406,7 +446,7 @@ func (s *Store) registerSkillsLocked(userID string, skills []domain.Skill) []dom
 		}
 		var found *domain.Skill
 		for _, sSk := range s.skills {
-			if sSk.UserID == userID && (sSk.ID == sk.ID || (sk.Name != "" && strings.EqualFold(sSk.Name, sk.Name))) {
+			if (sSk.UserID == userID || sSk.IsGlobal) && (sSk.ID == sk.ID || (sk.Name != "" && strings.EqualFold(sSk.Name, sk.Name))) {
 				found = sSk
 				break
 			}
@@ -772,7 +812,7 @@ func (s *Store) ListPresets(_ context.Context, userID string) ([]domain.Preset, 
 
 	var list []domain.Preset
 	for _, pr := range s.presets {
-		if pr.UserID == userID {
+		if pr.UserID == userID || pr.UserID == "system" || strings.HasPrefix(pr.ID, "builtin-") || pr.IsBuiltIn() {
 			list = append(list, *clone(pr))
 		}
 	}
@@ -784,7 +824,7 @@ func (s *Store) GetPreset(_ context.Context, userID, id string) (*domain.Preset,
 	defer s.mu.RUnlock()
 
 	pr, ok := s.presets[id]
-	if !ok || pr.UserID != userID {
+	if !ok || (pr.UserID != userID && pr.UserID != "system" && !strings.HasPrefix(pr.ID, "builtin-") && !pr.IsBuiltIn()) {
 		return nil, domain.ErrNotFound
 	}
 	return clone(pr), nil
@@ -901,6 +941,9 @@ func (s *Store) CreateTemplate(_ context.Context, tmpl *domain.TemplateSet) erro
 }
 
 func (s *Store) UpdateTemplate(_ context.Context, tmpl *domain.TemplateSet) error {
+	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
 	if err := renderer.Validate(tmpl); err != nil {
 		return err
 	}
@@ -909,8 +952,14 @@ func (s *Store) UpdateTemplate(_ context.Context, tmpl *domain.TemplateSet) erro
 	defer s.mu.Unlock()
 
 	existing, exists := s.templates[tmpl.ID]
-	if !exists || (existing.UserID != tmpl.UserID && !existing.IsBuiltIn) {
+	if !exists {
 		return domain.ErrNotFound
+	}
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
+	if existing.UserID != tmpl.UserID {
+		return domain.ErrForbidden
 	}
 	tmpl.UpdatedAt = time.Now().UTC()
 	s.templates[tmpl.ID] = clone(tmpl)
@@ -922,8 +971,14 @@ func (s *Store) DeleteTemplate(_ context.Context, userID, id string) error {
 	defer s.mu.Unlock()
 
 	existing, exists := s.templates[id]
-	if !exists || existing.UserID != userID {
+	if !exists {
 		return domain.ErrNotFound
+	}
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
+	if existing.UserID != userID {
+		return domain.ErrForbidden
 	}
 	delete(s.templates, id)
 	return nil
@@ -1055,6 +1110,11 @@ func (s *Store) CreateVersion(_ context.Context, version *domain.BranchVersion) 
 	}
 	version.ResumeID = targetID
 	version.BranchID = targetID
+	if version.UserID == "" && targetID != "" {
+		if b, ok := s.branches[targetID]; ok && b.UserID != "" {
+			version.UserID = b.UserID
+		}
+	}
 
 	var maxVer int
 	for _, v := range s.versions {
@@ -1208,7 +1268,9 @@ func (s *Store) CreateJob(_ context.Context, job *domain.PDFParseJob) error {
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
 	}
-	job.UpdatedAt = now
+	if job.UpdatedAt.IsZero() {
+		job.UpdatedAt = now
+	}
 	s.pdfJobs[job.ID] = clone(job)
 	return nil
 }
@@ -1283,3 +1345,218 @@ func (s *Store) FailInterruptedJobs(_ context.Context, reason string) error {
 	}
 	return nil
 }
+
+func (s *Store) CleanupCompletedJobs(_ context.Context, userID string, olderThan time.Duration) error {
+	if userID == "" {
+		return fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().UTC().Add(-olderThan)
+	for id, job := range s.pdfJobs {
+		if job.UserID == userID && (job.Status == domain.PDFParseJobStatusCompleted || job.Status == domain.PDFParseJobStatusFailed) {
+			if (job.CompletedAt != nil && job.CompletedAt.Before(cutoff)) || (job.CompletedAt == nil && job.UpdatedAt.Before(cutoff)) {
+				delete(s.pdfJobs, id)
+			}
+		}
+	}
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// Quota
+// -----------------------------------------------------------------------------
+
+func (s *Store) GetQuota(_ context.Context, userID string) (*domain.TenantQuota, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	quota, ok := s.quotas[userID]
+	if !ok {
+		quota = &domain.TenantQuota{
+			UserID:             userID,
+			DailyRequestsUsed:  0,
+			DailyRequestLimit:  50,
+			DailyWindowStart:   now,
+			MonthlyTokensUsed:  0,
+			MonthlyTokenLimit:  1000000,
+			MonthlyWindowStart: now,
+			UpdatedAt:          now,
+		}
+		s.quotas[userID] = quota
+		return clone(quota), nil
+	}
+
+	if quota.ResetWindowsIfExpired(now) {
+		quota.UpdatedAt = now
+	}
+
+	return clone(quota), nil
+}
+
+func (s *Store) ReserveQuota(
+	_ context.Context,
+	userID string,
+	op domain.LLMOperationType,
+	estimatedTokens int,
+	dailyLimit int,
+	monthlyLimit int,
+) (*domain.LLMUsageRecord, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	quota, ok := s.quotas[userID]
+	if !ok {
+		dLimit := 50
+		if dailyLimit > 0 {
+			dLimit = dailyLimit
+		}
+		mLimit := 1000000
+		if monthlyLimit > 0 {
+			mLimit = monthlyLimit
+		}
+		quota = &domain.TenantQuota{
+			UserID:             userID,
+			DailyRequestsUsed:  0,
+			DailyRequestLimit:  dLimit,
+			DailyWindowStart:   now,
+			MonthlyTokensUsed:  0,
+			MonthlyTokenLimit:  mLimit,
+			MonthlyWindowStart: now,
+			UpdatedAt:          now,
+		}
+		s.quotas[userID] = quota
+	}
+
+	if quota.ResetWindowsIfExpired(now) {
+		quota.UpdatedAt = now
+	}
+
+	if dailyLimit > 0 && quota.DailyRequestLimit != dailyLimit {
+		quota.DailyRequestLimit = dailyLimit
+	}
+	if monthlyLimit > 0 && quota.MonthlyTokenLimit != monthlyLimit {
+		quota.MonthlyTokenLimit = monthlyLimit
+	}
+
+	if quota.DailyRequestsUsed+1 > quota.DailyRequestLimit {
+		return nil, domain.ErrQuotaExceeded
+	}
+	if quota.MonthlyTokensUsed+estimatedTokens > quota.MonthlyTokenLimit {
+		return nil, domain.ErrQuotaExceeded
+	}
+
+	quota.DailyRequestsUsed++
+	quota.MonthlyTokensUsed += estimatedTokens
+	quota.UpdatedAt = now
+
+	record := &domain.LLMUsageRecord{
+		ID:              fmt.Sprintf("usage-%d", time.Now().UnixNano()),
+		UserID:          userID,
+		Operation:       op,
+		EstimatedTokens: estimatedTokens,
+		Status:          domain.ReservationStatusPending,
+		CreatedAt:       now,
+	}
+	s.usageRecords[record.ID] = record
+
+	return clone(record), nil
+}
+
+func (s *Store) CommitUsage(_ context.Context, reservationID string, usage domain.TokenUsage) error {
+	if reservationID == "" {
+		return fmt.Errorf("%w: reservation id cannot be empty", domain.ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.usageRecords[reservationID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if record.Status != domain.ReservationStatusPending {
+		return nil
+	}
+
+	if quota, ok := s.quotas[record.UserID]; ok {
+		delta := usage.TotalTokens - record.EstimatedTokens
+		quota.AdjustMonthlyTokens(delta)
+		quota.UpdatedAt = time.Now().UTC()
+	}
+
+	now := time.Now().UTC()
+	record.Status = domain.ReservationStatusCommitted
+	record.PromptTokens = usage.PromptTokens
+	record.CompletionTokens = usage.CompletionTokens
+	record.TotalTokens = usage.TotalTokens
+	record.CommittedAt = &now
+	return nil
+}
+
+func (s *Store) ReleaseQuota(_ context.Context, reservationID string, errMsg string) error {
+	if reservationID == "" {
+		return fmt.Errorf("%w: reservation id cannot be empty", domain.ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.usageRecords[reservationID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if record.Status != domain.ReservationStatusPending {
+		return nil
+	}
+
+	if quota, ok := s.quotas[record.UserID]; ok {
+		quota.ReleaseReservation(record.EstimatedTokens)
+		quota.UpdatedAt = time.Now().UTC()
+	}
+
+	record.Status = domain.ReservationStatusReleased
+	record.ErrorMessage = errMsg
+	return nil
+}
+
+func (s *Store) ListUsageRecords(_ context.Context, userID string, limit int) ([]domain.LLMUsageRecord, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var list []domain.LLMUsageRecord
+	for _, rec := range s.usageRecords {
+		if rec.UserID == userID {
+			list = append(list, *clone(rec))
+		}
+	}
+
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].CreatedAt.After(list[j].CreatedAt)
+	})
+
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	return list, nil
+}
+

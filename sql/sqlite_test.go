@@ -1253,5 +1253,196 @@ func TestDB_SecondaryAndJoinTableIndexes(t *testing.T) {
 	}
 }
 
+func TestQuotaRepository_ReserveCommitRelease(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:quota_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	quotaRepo := NewQuotaRepository(db)
+	userID := "user-quota-1"
+
+	// 1. Initial GetQuota returns default limits
+	quota, err := quotaRepo.GetQuota(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get quota: %v", err)
+	}
+	if quota.DailyRequestsUsed != 0 || quota.MonthlyTokensUsed != 0 {
+		t.Errorf("expected 0 used, got %+v", quota)
+	}
+
+	// 2. Reserve quota
+	rec, err := quotaRepo.ReserveQuota(ctx, userID, domain.OperationResumeTailoring, 2000, 2, 5000)
+	if err != nil {
+		t.Fatalf("failed to reserve quota: %v", err)
+	}
+	if rec.EstimatedTokens != 2000 || rec.Status != domain.ReservationStatusPending {
+		t.Errorf("unexpected reservation record: %+v", rec)
+	}
+
+	// 3. Second reservation succeeds
+	rec2, err := quotaRepo.ReserveQuota(ctx, userID, domain.OperationGapAnalysis, 1000, 2, 5000)
+	if err != nil {
+		t.Fatalf("failed to reserve second quota: %v", err)
+	}
+
+	// 4. Third reservation exceeds daily limit (limit is 2)
+	_, err = quotaRepo.ReserveQuota(ctx, userID, domain.OperationResumeTailoring, 500, 2, 5000)
+	if !errors.Is(err, domain.ErrQuotaExceeded) {
+		t.Fatalf("expected ErrQuotaExceeded, got: %v", err)
+	}
+
+	// 5. Commit usage for rec1 with reconciliation
+	usage := domain.TokenUsage{PromptTokens: 800, CompletionTokens: 1400, TotalTokens: 2200}
+	if err := quotaRepo.CommitUsage(ctx, rec.ID, usage); err != nil {
+		t.Fatalf("failed to commit usage: %v", err)
+	}
+
+	// 6. Release reservation for rec2 (e.g. failure)
+	if err := quotaRepo.ReleaseQuota(ctx, rec2.ID, "llm timed out"); err != nil {
+		t.Fatalf("failed to release quota: %v", err)
+	}
+
+	// 7. Verify updated quota after release: 1 daily request used, tokens reconciled
+	quotaAfter, err := quotaRepo.GetQuota(ctx, userID)
+	if err != nil {
+		t.Fatalf("failed to get quota: %v", err)
+	}
+	if quotaAfter.DailyRequestsUsed != 1 {
+		t.Errorf("expected 1 daily request used after release, got %d", quotaAfter.DailyRequestsUsed)
+	}
+	if quotaAfter.MonthlyTokensUsed != 2200 {
+		t.Errorf("expected 2200 tokens used after commit, got %d", quotaAfter.MonthlyTokensUsed)
+	}
+}
+
+func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:globalskill_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	profileRepo := NewProfileRepository(db)
+	systemUserID := "system"
+	tenantUserID := "user-tenant-1"
+
+	// 1. Create global skill as system
+	globalSkill := &domain.Skill{
+		ID:       "global-skill-rust",
+		ShortID:  "g-rust",
+		UserID:   systemUserID,
+		Name:     "Rust",
+		Slug:     "rust",
+		IsGlobal: true,
+	}
+	if err := profileRepo.CreateSkill(ctx, globalSkill); err != nil {
+		t.Fatalf("failed to create global skill: %v", err)
+	}
+
+	// 2. Tenant cannot create a skill with IsGlobal=true
+	fakeGlobal := &domain.Skill{
+		ID:       "fake-global-py",
+		UserID:   tenantUserID,
+		Name:     "Python",
+		IsGlobal: true,
+	}
+	if err := profileRepo.CreateSkill(ctx, fakeGlobal); err == nil {
+		t.Fatal("expected error when tenant attempts to create global skill, got nil")
+	}
+
+	// 3. Tenant can see global skill in ListSkills and GetSkill
+	skills, err := profileRepo.ListSkills(ctx, tenantUserID)
+	if err != nil {
+		t.Fatalf("failed to list skills: %v", err)
+	}
+	found := false
+	for _, s := range skills {
+		if s.ID == globalSkill.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected global skill to be listed for tenant")
+	}
+
+	fetched, err := profileRepo.GetSkill(ctx, tenantUserID, globalSkill.ID)
+	if err != nil {
+		t.Fatalf("failed to get global skill as tenant: %v", err)
+	}
+	if fetched.Name != "Rust" {
+		t.Errorf("expected 'Rust', got %q", fetched.Name)
+	}
+
+	// 4. Tenant cannot update global skill
+	fetched.Name = "Rust 2024"
+	if err := profileRepo.UpdateSkill(ctx, fetched); !errors.Is(err, domain.ErrGlobalSkillImmutable) {
+		t.Fatalf("expected ErrGlobalSkillImmutable on update, got: %v", err)
+	}
+
+	// 5. Tenant cannot delete global skill
+	if err := profileRepo.DeleteSkill(ctx, tenantUserID, globalSkill.ID); !errors.Is(err, domain.ErrGlobalSkillImmutable) {
+		t.Fatalf("expected ErrGlobalSkillImmutable on delete, got: %v", err)
+	}
+}
+
+func TestPDFParseJobRepository_CleanupCompletedJobs(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:cleanup_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	repo := NewPDFParseJobRepository(db)
+	userID := "user-cleanup"
+
+	now := time.Now().UTC()
+	oldTime := now.Add(-48 * time.Hour)
+
+	oldJob := &domain.PDFParseJob{
+		ID:          "job-old",
+		UserID:      userID,
+		Status:      domain.PDFParseJobStatusCompleted,
+		CreatedAt:   oldTime,
+		UpdatedAt:   oldTime,
+		CompletedAt: &oldTime,
+	}
+	if err := repo.CreateJob(ctx, oldJob); err != nil {
+		t.Fatalf("failed to create old job: %v", err)
+	}
+
+	newJob := &domain.PDFParseJob{
+		ID:          "job-new",
+		UserID:      userID,
+		Status:      domain.PDFParseJobStatusCompleted,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		CompletedAt: &now,
+	}
+	if err := repo.CreateJob(ctx, newJob); err != nil {
+		t.Fatalf("failed to create new job: %v", err)
+	}
+
+	// Cleanup jobs older than 24 hours
+	if err := repo.CleanupCompletedJobs(ctx, userID, 24*time.Hour); err != nil {
+		t.Fatalf("failed to cleanup jobs: %v", err)
+	}
+
+	// Old job should be gone
+	_, err = repo.GetJob(ctx, userID, "job-old")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("expected ErrNotFound for cleaned up job, got: %v", err)
+	}
+
+	// New job should still exist
+	_, err = repo.GetJob(ctx, userID, "job-new")
+	if err != nil {
+		t.Errorf("expected new job to remain, got: %v", err)
+	}
+}
+
+
 
 

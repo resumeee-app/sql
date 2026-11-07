@@ -18,17 +18,17 @@ func NewPresetRepository(db *gorm.DB) domain.PresetRepository {
 	return &presetRepository{db: db}
 }
 
-// ListPresets retrieves all presets registered for the user.
+// ListPresets retrieves all presets registered for the user plus system built-in presets.
 func (r *presetRepository) ListPresets(ctx context.Context, userID string) ([]domain.Preset, error) {
 	var presets []domain.Preset
-	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&presets).Error
+	err := r.db.WithContext(ctx).Where("user_id = ? OR user_id = 'system' OR id LIKE 'builtin-%'", userID).Find(&presets).Error
 	return presets, mapError(err)
 }
 
-// GetPreset retrieves a preset by user and preset ID.
+// GetPreset retrieves a preset by user and preset ID (or system built-in preset).
 func (r *presetRepository) GetPreset(ctx context.Context, userID, id string) (*domain.Preset, error) {
 	var preset domain.Preset
-	err := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).First(&preset).Error
+	err := r.db.WithContext(ctx).Where("(user_id = ? OR user_id = 'system' OR id LIKE 'builtin-%') AND id = ?", userID, id).First(&preset).Error
 	if err != nil {
 		return nil, mapError(err)
 	}

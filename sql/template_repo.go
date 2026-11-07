@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -58,14 +59,37 @@ func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.Te
 
 // UpdateTemplate validates template syntax and saves modifications.
 func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
+	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
 	if err := ValidateTemplateSet(tmpl); err != nil {
 		return err
+	}
+	var existing domain.TemplateSet
+	if err := r.db.WithContext(ctx).Where("id = ?", tmpl.ID).First(&existing).Error; err != nil {
+		return mapError(err)
+	}
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
+	if existing.UserID != tmpl.UserID {
+		return domain.ErrForbidden
 	}
 	return mapError(r.db.WithContext(ctx).Save(tmpl).Error)
 }
 
 // DeleteTemplate removes a custom template set.
 func (r *templateRepository) DeleteTemplate(ctx context.Context, userID, id string) error {
+	var existing domain.TemplateSet
+	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
+		return mapError(err)
+	}
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+		return domain.ErrStrategyImmutable
+	}
+	if existing.UserID != userID {
+		return domain.ErrForbidden
+	}
 	res := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).Delete(&domain.TemplateSet{})
 	if res.Error != nil {
 		return mapError(res.Error)

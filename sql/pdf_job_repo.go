@@ -115,3 +115,20 @@ func (r *pdfParseJobRepository) FailInterruptedJobs(ctx context.Context, reason 
 	}
 	return nil
 }
+
+// CleanupCompletedJobs purges completed or failed PDF parse jobs older than the retention threshold.
+func (r *pdfParseJobRepository) CleanupCompletedJobs(ctx context.Context, userID string, olderThan time.Duration) error {
+	if userID == "" {
+		return fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	err := r.db.WithContext(ctx).
+		Where("user_id = ? AND status IN ? AND (completed_at < ? OR (completed_at IS NULL AND updated_at < ?))",
+			userID,
+			[]domain.PDFParseJobStatus{domain.PDFParseJobStatusCompleted, domain.PDFParseJobStatusFailed},
+			cutoff, cutoff,
+		).
+		Delete(&domain.PDFParseJob{}).Error
+	return mapError(err)
+}
+

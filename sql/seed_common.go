@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,6 +19,67 @@ import (
 //   - error: Non-nil if any template within the set fails validation.
 func ValidateTemplateSet(tmpl *domain.TemplateSet) error {
 	return renderer.Validate(tmpl)
+}
+
+// DefaultGlobalSkills returns the canonical, system-seeded global skills available to all tenants.
+func DefaultGlobalSkills() []domain.Skill {
+	now := time.Now().UTC()
+	canonical := []struct {
+		Name     string
+		Slug     string
+		Category string
+	}{
+		// Languages
+		{"Go", "go", "Languages"},
+		{"Python", "python", "Languages"},
+		{"TypeScript", "typescript", "Languages"},
+		{"JavaScript", "javascript", "Languages"},
+		{"Rust", "rust", "Languages"},
+		{"Java", "java", "Languages"},
+		{"C++", "c-plus-plus", "Languages"},
+		{"SQL", "sql", "Languages"},
+		// Cloud & Infrastructure
+		{"Docker", "docker", "Cloud & Infrastructure"},
+		{"Kubernetes", "kubernetes", "Cloud & Infrastructure"},
+		{"AWS", "aws", "Cloud & Infrastructure"},
+		{"Google Cloud", "google-cloud", "Cloud & Infrastructure"},
+		{"Terraform", "terraform", "Cloud & Infrastructure"},
+		{"Linux", "linux", "Cloud & Infrastructure"},
+		// Databases
+		{"PostgreSQL", "postgresql", "Databases"},
+		{"MySQL", "mysql", "Databases"},
+		{"SQLite", "sqlite", "Databases"},
+		{"Redis", "redis", "Databases"},
+		{"MongoDB", "mongodb", "Databases"},
+		// Web & Frameworks
+		{"React", "react", "Web Technologies"},
+		{"Next.js", "nextjs", "Web Technologies"},
+		{"Node.js", "nodejs", "Web Technologies"},
+		{"GraphQL", "graphql", "Web Technologies"},
+		{"REST APIs", "rest-apis", "Web Technologies"},
+		// AI & Machine Learning
+		{"PyTorch", "pytorch", "AI & Machine Learning"},
+		{"TensorFlow", "tensorflow", "AI & Machine Learning"},
+		{"LLM Integration", "llm-integration", "AI & Machine Learning"},
+		{"LangChain", "langchain", "AI & Machine Learning"},
+	}
+
+	skills := make([]domain.Skill, len(canonical))
+	for i, c := range canonical {
+		skills[i] = domain.Skill{
+			ID:          "global-skill-" + c.Slug,
+			ShortID:     "g-" + c.Slug,
+			UserID:      "system",
+			Name:        c.Name,
+			Slug:        c.Slug,
+			IsGlobal:    true,
+			Category:    c.Category,
+			Proficiency: "Proficient",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+	}
+	return skills
 }
 
 // DefaultPresets returns the system default built-in presets customized for the specified user.
@@ -110,6 +172,17 @@ func SeedDefaultData(
 		}
 	}
 
+	// 2.5 Seed Global Skills
+	globalSkills := DefaultGlobalSkills()
+	for _, skill := range globalSkills {
+		existing, err := profileRepo.GetSkill(ctx, "system", skill.ID)
+		if err != nil || existing == nil {
+			if err := profileRepo.CreateSkill(ctx, &skill); err != nil && !errors.Is(err, domain.ErrConflict) {
+				return fmt.Errorf("seeding global skill %s: %w", skill.Name, err)
+			}
+		}
+	}
+
 	// 3. Seed Default Profile
 	existingProf, err := profileRepo.GetProfile(ctx, targetUserID)
 	if err != nil || existingProf == nil {
@@ -169,6 +242,7 @@ func SeedDefaultData(
 		verID := "ver-default-" + targetUserID
 		ver := domain.BranchVersion{
 			ID:                 verID,
+			UserID:             targetUserID,
 			ResumeID:           defaultBranch.ID,
 			BranchID:           defaultBranch.ID,
 			VersionNumber:      1,
