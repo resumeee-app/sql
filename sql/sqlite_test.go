@@ -1,16 +1,15 @@
-package sqlite_test
+package sqlite
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/repository/sqlite"
 )
 
 func setupTestDB(t *testing.T) (
@@ -21,21 +20,21 @@ func setupTestDB(t *testing.T) (
 ) {
 	t.Helper()
 	// Using shared cache memory database for tests
-	db, err := sqlite.New("file::memory:?cache=shared")
+	db, err := New("file::memory:?cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open test sqlite db: %v", err)
 	}
 
-	profileRepo := sqlite.NewProfileRepository(db)
-	presetRepo := sqlite.NewPresetRepository(db)
-	templateRepo := sqlite.NewTemplateRepository(db)
-	branchRepo := sqlite.NewBranchRepository(db)
+	profileRepo := NewProfileRepository(db)
+	presetRepo := NewPresetRepository(db)
+	templateRepo := NewTemplateRepository(db)
+	branchRepo := NewBranchRepository(db)
 
 	return profileRepo, presetRepo, templateRepo, branchRepo
 }
 
 func TestDB_Initialization(t *testing.T) {
-	db, err := sqlite.New("file:init_test?mode=memory&cache=shared")
+	db, err := New("file:init_test?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -976,7 +975,7 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 	}
 
 	// Verify rendering with html/template context auto-escapes XSS payloads
-	parsed, err := sqlite.SafeFuncMapRender(safeTmpl.HTMLTemplate, struct {
+	parsed, err := SafeFuncMapRender(safeTmpl.HTMLTemplate, struct {
 		FullName string
 		Website  string
 	}{
@@ -1000,7 +999,7 @@ func TestBranchRepository_VersionCompositeUniqueConstraint(t *testing.T) {
 	ctx := context.Background()
 	_, _, _, branchRepo := setupTestDB(t)
 
-	db, err := sqlite.New("file:unique_test?mode=memory&cache=shared")
+	db, err := New("file:unique_test?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -1231,7 +1230,7 @@ func TestProfileRepository_SkillResolution(t *testing.T) {
 }
 
 func TestDB_SecondaryAndJoinTableIndexes(t *testing.T) {
-	db, err := sqlite.New("file:indexes_test?mode=memory&cache=shared")
+	db, err := New("file:indexes_test?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}

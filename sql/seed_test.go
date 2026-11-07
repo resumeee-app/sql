@@ -1,4 +1,4 @@
-package sqlite_test
+package sqlite
 
 import (
 	"context"
@@ -6,23 +6,22 @@ import (
 
 	"resumeee/internal/domain"
 	"resumeee/internal/renderer"
-	"resumeee/internal/repository/sqlite"
 )
 
 func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	ctx := context.Background()
-	db, err := sqlite.New("file:seed_test_1?mode=memory&cache=shared")
+	db, err := New("file:seed_test_1?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
 
-	if err := sqlite.SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultData(ctx, db); err != nil {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 
-	profileRepo := sqlite.NewProfileRepository(db)
-	templateRepo := sqlite.NewTemplateRepository(db)
-	presetRepo := sqlite.NewPresetRepository(db)
+	profileRepo := NewProfileRepository(db)
+	templateRepo := NewTemplateRepository(db)
+	presetRepo := NewPresetRepository(db)
 
 	// 1. Verify default profile
 	prof, err := profileRepo.GetProfile(ctx, "default")
@@ -50,7 +49,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	for _, tmpl := range templates {
 		tmplMap[tmpl.Name] = tmpl
 		// Verify template syntax validity
-		if err := sqlite.ValidateTemplateSet(&tmpl); err != nil {
+		if err := ValidateTemplateSet(&tmpl); err != nil {
 			t.Errorf("template %s has invalid syntax: %v", tmpl.Name, err)
 		}
 	}
@@ -59,11 +58,11 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		name string
 		id   string
 	}{
-		{"Standard Clean", sqlite.TemplateStandardCleanID},
-		{"Detailed Immigration / CV", sqlite.TemplateDetailedImmigrationCVID},
-		{"ATS Minimal Plain-Text & Clean HTML", sqlite.TemplateATSMinimalTxtID},
-		{"ATS Modern Tech", sqlite.TemplateATSHybridTechID},
-		{"ATS Executive Clean", sqlite.TemplateATSExecutiveCleanID},
+		{"Standard Clean", TemplateStandardCleanID},
+		{"Detailed Immigration / CV", TemplateDetailedImmigrationCVID},
+		{"ATS Minimal Plain-Text & Clean HTML", TemplateATSMinimalTxtID},
+		{"ATS Modern Tech", TemplateATSHybridTechID},
+		{"ATS Executive Clean", TemplateATSExecutiveCleanID},
 	}
 
 	for _, exp := range expectedTemplates {
@@ -109,7 +108,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	}
 
 	// 4. Verify default branch seeded
-	branchRepo := sqlite.NewBranchRepository(db)
+	branchRepo := NewBranchRepository(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)
@@ -127,8 +126,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if defaultBranch.Name != domain.DefaultBranchName {
 		t.Errorf("expected default branch name %s, got %s", domain.DefaultBranchName, defaultBranch.Name)
 	}
-	if defaultBranch.TemplateSetID != sqlite.TemplateStandardCleanID {
-		t.Errorf("expected default branch template %s, got %s", sqlite.TemplateStandardCleanID, defaultBranch.TemplateSetID)
+	if defaultBranch.TemplateSetID != TemplateStandardCleanID {
+		t.Errorf("expected default branch template %s, got %s", TemplateStandardCleanID, defaultBranch.TemplateSetID)
 	}
 	if defaultBranch.ActiveVersionID == nil || *defaultBranch.ActiveVersionID == "" {
 		t.Fatalf("expected default branch to have an active version")
@@ -154,19 +153,19 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 
 func TestSeedDefaultData_Idempotency(t *testing.T) {
 	ctx := context.Background()
-	db, err := sqlite.New("file:seed_test_idempotent?mode=memory&cache=shared")
+	db, err := New("file:seed_test_idempotent?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
 
 	// First seed
-	if err := sqlite.SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultData(ctx, db); err != nil {
 		t.Fatalf("first SeedDefaultData failed: %v", err)
 	}
 
-	profileRepo := sqlite.NewProfileRepository(db)
-	templateRepo := sqlite.NewTemplateRepository(db)
-	presetRepo := sqlite.NewPresetRepository(db)
+	profileRepo := NewProfileRepository(db)
+	templateRepo := NewTemplateRepository(db)
+	presetRepo := NewPresetRepository(db)
 
 	// User modifies profile
 	prof, err := profileRepo.GetProfile(ctx, "default")
@@ -182,7 +181,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 
 	// Run seeder multiple consecutive times
 	for i := 0; i < 3; i++ {
-		if err := sqlite.SeedDefaultData(ctx, db); err != nil {
+		if err := SeedDefaultData(ctx, db); err != nil {
 			t.Fatalf("subsequent SeedDefaultData (%d) failed: %v", i, err)
 		}
 	}
@@ -217,7 +216,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 		t.Errorf("expected exactly 2 presets after multiple seeds, got %d", len(presets))
 	}
 
-	branchRepo := sqlite.NewBranchRepository(db)
+	branchRepo := NewBranchRepository(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)
@@ -229,16 +228,16 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 
 func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 	ctx := context.Background()
-	db, err := sqlite.New("file:seed_test_immutability?mode=memory&cache=shared")
+	db, err := New("file:seed_test_immutability?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
 
-	if err := sqlite.SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultData(ctx, db); err != nil {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 
-	branchRepo := sqlite.NewBranchRepository(db)
+	branchRepo := NewBranchRepository(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)
@@ -260,7 +259,7 @@ func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 		ID:            "branch-custom-1",
 		UserID:        "default",
 		Name:          "Custom Branch",
-		TemplateSetID: sqlite.TemplateStandardCleanID,
+		TemplateSetID: TemplateStandardCleanID,
 		IsDefault:     false,
 	}
 	if err := branchRepo.CreateBranch(ctx, customBranch); err != nil {

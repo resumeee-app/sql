@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"resumeee/internal/domain"
+	"resumeee/internal/repository"
 )
 
 // New initializes a GORM SQLite database connection using the pure-Go SQLite driver,
@@ -107,4 +110,57 @@ func mapError(err error) error {
 		return fmt.Errorf("%w: %v", domain.ErrConflict, err)
 	}
 	return err
+}
+
+// OpenStore initializes a SQLite database connection at dbPath, ensures parent directories exist,
+// seeds default data idempotently, and bundles all SQLite repository implementations into a repository.Store.
+//
+// Parameters:
+//   - ctx: Context controlling cancellation during startup and seeding.
+//   - dbPath: Filesystem path to SQLite database or memory URI (":memory:").
+//   - defaultUserID: Optional target user identifier for initial seed records (defaults to "default").
+//
+// Returns:
+//   - repository.Store: Initialized SQLite store bundle.
+//   - error: Non-nil if directory creation, database initialization, or seeding fails.
+func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (repository.Store, error) {
+	if dbPath != ":memory:" && !strings.Contains(dbPath, "mode=memory") {
+		dir := filepath.Dir(dbPath)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0750); err != nil {
+				return nil, fmt.Errorf("creating db directory: %w", err)
+			}
+		}
+	}
+
+	db, err := New(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("initializing database: %w", err)
+	}
+
+	targetUserID := "default"
+	if len(defaultUserID) > 0 && defaultUserID[0] != "" {
+		targetUserID = defaultUserID[0]
+	}
+
+	if err := SeedDefaultData(ctx, db, targetUserID); err != nil {
+		return nil, fmt.Errorf("seeding default data: %w", err)
+	}
+
+	sqlDB, err := db.DB()
+	closer := func() error {
+		if err == nil && sqlDB != nil {
+			return sqlDB.Close()
+		}
+		return nil
+	}
+
+	return &repository.StoreBundle{
+		ProfileRepo:  NewProfileRepository(db),
+		PresetRepo:   NewPresetRepository(db),
+		TemplateRepo: NewTemplateRepository(db),
+		BranchRepo:   NewBranchRepository(db),
+		PDFJobRepo:   NewPDFParseJobRepository(db),
+		Closer:       closer,
+	}, nil
 }

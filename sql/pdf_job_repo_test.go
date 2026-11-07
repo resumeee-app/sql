@@ -1,4 +1,4 @@
-package sqlite_test
+package sqlite
 
 import (
 	"context"
@@ -7,16 +7,15 @@ import (
 	"time"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/repository/sqlite"
 )
 
 func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
-	db, err := sqlite.New("file::memory:?cache=shared")
+	db, err := New("file::memory:?cache=shared")
 	if err != nil {
 		t.Fatalf("failed to initialize sqlite: %v", err)
 	}
 
-	repo := sqlite.NewPDFParseJobRepository(db)
+	repo := NewPDFParseJobRepository(db)
 	ctx := context.Background()
 	userID := "user-pdf-test-1"
 
