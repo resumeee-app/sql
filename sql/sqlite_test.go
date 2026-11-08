@@ -1466,6 +1466,97 @@ func TestPDFParseJobRepository_CleanupCompletedJobs(t *testing.T) {
 	}
 }
 
+func TestBranchRepository_GapReportPropagation(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, branchRepo := setupTestDB(t)
 
+	userID := fmt.Sprintf("user-gap-%d", time.Now().UnixNano())
+	score85 := 85.0
 
+	t.Run("CompleteVersion propagates GapReport and match score to parent branch", func(t *testing.T) {
+		b := &domain.Branch{
+			ID:            "br-gap-prop",
+			UserID:        userID,
+			Name:          "Backend Staff Engineer",
+			TemplateSetID: "tmpl-1",
+		}
+		if err := branchRepo.CreateBranch(ctx, b); err != nil {
+			t.Fatalf("failed to create branch: %v", err)
+		}
+
+		v := &domain.BranchVersion{
+			ID:               "ver-gap-1",
+			BranchID:         b.ID,
+			MainRevisionUsed: 1,
+			Status:           domain.VersionStatusProcessing,
+		}
+		if err := branchRepo.CreateVersion(ctx, v); err != nil {
+			t.Fatalf("failed to create version: %v", err)
+		}
+
+		v.Status = domain.VersionStatusCompleted
+		v.GapReport = &domain.GapReport{
+			OverallMatchSummary: "Strong candidate match with minor gap",
+			MatchScore:          &score85,
+			MissingRequirements: []domain.GapItem{
+				{Requirement: "Kubernetes operator development", Importance: domain.GapImportanceCritical},
+			},
+		}
+
+		if err := branchRepo.CompleteVersion(ctx, v); err != nil {
+			t.Fatalf("failed to complete version: %v", err)
+		}
+
+		fetched, err := branchRepo.GetBranch(ctx, userID, b.ID)
+		if err != nil {
+			t.Fatalf("failed to get branch: %v", err)
+		}
+		if fetched.GapReport == nil {
+			t.Fatalf("expected parent branch GapReport to be populated after CompleteVersion, got nil")
+		}
+		if fetched.GapReport.MatchScore == nil || *fetched.GapReport.MatchScore != score85 {
+			t.Errorf("expected match score %f, got %v", score85, fetched.GapReport.MatchScore)
+		}
+		if len(fetched.GapReport.MissingRequirements) != 1 {
+			t.Errorf("expected 1 missing requirement, got %d", len(fetched.GapReport.MissingRequirements))
+		}
+	})
+
+	t.Run("CompleteVersion persists nil when version.GapReport is nil", func(t *testing.T) {
+		b := &domain.Branch{
+			ID:            "br-gap-nil",
+			UserID:        userID,
+			Name:          "Untailored Variant",
+			TemplateSetID: "tmpl-1",
+		}
+		if err := branchRepo.CreateBranch(ctx, b); err != nil {
+			t.Fatalf("failed to create branch: %v", err)
+		}
+
+		v := &domain.BranchVersion{
+			ID:               "ver-gap-nil-1",
+			BranchID:         b.ID,
+			MainRevisionUsed: 1,
+			Status:           domain.VersionStatusCompleted,
+			GapReport:        nil,
+		}
+		if err := branchRepo.CreateVersion(ctx, v); err != nil {
+			t.Fatalf("failed to create version: %v", err)
+		}
+		if err := branchRepo.CompleteVersion(ctx, v); err != nil {
+			t.Fatalf("failed to complete version: %v", err)
+		}
+
+		fetched, err := branchRepo.GetBranch(ctx, userID, b.ID)
+		if err != nil {
+			t.Fatalf("failed to get branch: %v", err)
+		}
+		if fetched.GapReport != nil {
+			t.Errorf("expected parent branch GapReport to be nil when version.GapReport is nil, got %+v", fetched.GapReport)
+		}
+		if fetched.ActiveVersionID == nil || *fetched.ActiveVersionID != v.ID {
+			t.Errorf("expected active version ID %s, got %v", v.ID, fetched.ActiveVersionID)
+		}
+	})
+}
 

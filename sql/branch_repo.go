@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -191,6 +192,24 @@ func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID stri
 	return &version, nil
 }
 
+// GetVersionsByIDs retrieves multiple branch versions by their IDs in a single batch query.
+func (r *branchRepository) GetVersionsByIDs(ctx context.Context, versionIDs []string) ([]domain.BranchVersion, error) {
+	if len(versionIDs) == 0 {
+		return nil, nil
+	}
+	var versions []domain.BranchVersion
+	err := r.db.WithContext(ctx).
+		Where("id IN ?", versionIDs).
+		Find(&versions).Error
+	if err != nil {
+		return nil, mapError(err)
+	}
+	for i := range versions {
+		syncVersionIDs(&versions[i])
+	}
+	return versions, nil
+}
+
 // ListVersions returns all versions belonging to a branch ordered by version number ascending.
 func (r *branchRepository) ListVersions(ctx context.Context, branchID string) ([]domain.BranchVersion, error) {
 	var versions []domain.BranchVersion
@@ -249,14 +268,25 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.
 			return err
 		}
 
-		// Update active version pointer and last synced revision on parent branch
+		// Update active version pointer, last synced revision, and gap report on parent branch
+		updates := map[string]any{
+			"active_version_id":         version.ID,
+			"last_synced_main_revision": version.MainRevisionUsed,
+			"updated_at":                now,
+		}
+		if version.GapReport != nil {
+			raw, err := json.Marshal(version.GapReport)
+			if err != nil {
+				return fmt.Errorf("failed to marshal gap report: %w", err)
+			}
+			updates["gap_report"] = string(raw)
+		} else {
+			updates["gap_report"] = nil
+		}
+
 		return tx.Model(&domain.Branch{}).
 			Where("id = ?", parentID).
-			Updates(map[string]any{
-				"active_version_id":            version.ID,
-				"last_synced_main_revision":    version.MainRevisionUsed,
-				"updated_at":                   now,
-			}).Error
+			Updates(updates).Error
 	})
 }
 

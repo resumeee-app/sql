@@ -1180,6 +1180,21 @@ func (s *Store) GetVersionByNumber(_ context.Context, branchID string, versionNu
 	return nil, domain.ErrNotFound
 }
 
+func (s *Store) GetVersionsByIDs(_ context.Context, versionIDs []string) ([]domain.BranchVersion, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []domain.BranchVersion
+	for _, id := range versionIDs {
+		if v, ok := s.versions[id]; ok {
+			copyV := clone(v)
+			syncVersionIDs(copyV)
+			result = append(result, *copyV)
+		}
+	}
+	return result, nil
+}
+
 func (s *Store) ListVersions(_ context.Context, branchID string) ([]domain.BranchVersion, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1242,6 +1257,11 @@ func (s *Store) CompleteVersion(_ context.Context, version *domain.BranchVersion
 	}
 	br.ActiveVersionID = &version.ID
 	br.LastSyncedMainRevision = version.MainRevisionUsed
+	if version.GapReport != nil {
+		br.GapReport = clone(version.GapReport)
+	} else {
+		br.GapReport = nil
+	}
 	br.UpdatedAt = now
 	return nil
 }
