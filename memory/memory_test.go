@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 	"resumeee/internal/repository"
 	"resumeee/internal/repository/memory"
 )
@@ -362,7 +361,7 @@ func TestBranchRepository_LifecycleAndVersions(t *testing.T) {
 		ID:                     "br-test-1",
 		UserID:                 userID,
 		Name:                   "Tech Resume Branch",
-		TemplateSetID:          renderer.TemplateStandardCleanID,
+		TemplateSetID:          domain.TemplateStandardCleanID,
 		LastSyncedMainRevision: 1,
 	}
 	if err := store.CreateBranch(ctx, branch); err != nil {

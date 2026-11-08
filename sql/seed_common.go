@@ -8,18 +8,32 @@ import (
 	"time"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 )
 
-// ValidateTemplateSet delegates template syntax and integrity validation to the template renderer.
-//
-// Parameters:
-//   - tmpl: The template set to validate.
-//
-// Returns:
-//   - error: Non-nil if any template within the set fails validation.
-func ValidateTemplateSet(tmpl *domain.TemplateSet) error {
-	return renderer.Validate(tmpl)
+// ValidateTemplateSet validates template set structure and syntax using an optional validator or default validation.
+func ValidateTemplateSet(tmpl *domain.TemplateSet, validator ...domain.TemplateValidator) error {
+	if len(validator) > 0 && validator[0] != nil {
+		return validator[0].Validate(tmpl)
+	}
+	return domain.DefaultTemplateValidator{}.Validate(tmpl)
+}
+
+type initialRendererContextKey struct{}
+
+// WithInitialRenderer wraps the context with an initial TemplateRenderer for baseline version generation.
+func WithInitialRenderer(ctx context.Context, renderer domain.TemplateRenderer) context.Context {
+	return context.WithValue(ctx, initialRendererContextKey{}, renderer)
+}
+
+// InitialRendererFromContext extracts a TemplateRenderer from context if present.
+func InitialRendererFromContext(ctx context.Context) domain.TemplateRenderer {
+	if ctx == nil {
+		return nil
+	}
+	if r, ok := ctx.Value(initialRendererContextKey{}).(domain.TemplateRenderer); ok {
+		return r
+	}
+	return nil
 }
 
 // DefaultGlobalSkills returns the canonical, system-seeded global skills available to all tenants.
@@ -95,8 +109,8 @@ func DefaultPresets(userID string) []domain.Preset {
 		userID = domain.SystemUserID
 	}
 	now := time.Now().UTC()
-	themeStd := renderer.TemplateStandardCleanID
-	themeCV := renderer.TemplateDetailedImmigrationCVID
+	themeStd := domain.TemplateStandardCleanID
+	themeCV := domain.TemplateDetailedImmigrationCVID
 	return []domain.Preset{
 		{
 			ID:                 domain.Preset1PageTechResumeID,
@@ -105,7 +119,7 @@ func DefaultPresets(userID string) []domain.Preset {
 			Description:        "Concise tech resume format emphasizing recent high-impact metrics and key skills.",
 			SystemInstructions: "Focus strictly on high-impact engineering accomplishments, quantitative outcomes, and relevant technical skill groups. Ensure concise bullet formatting suitable for a 1-page tech resume.",
 			SuggestedThemeID:   &themeStd,
-			TemplateSetID:      renderer.TemplateStandardCleanID,
+			TemplateSetID:      domain.TemplateStandardCleanID,
 			Language:           domain.DefaultLanguage,
 			CreatedAt:          now,
 			UpdatedAt:          now,
@@ -117,7 +131,7 @@ func DefaultPresets(userID string) []domain.Preset {
 			Description:        "Unabridged career history format for audit, visa, and immigration compliance.",
 			SystemInstructions: "Include full, unabridged employment and academic history. Maintain detailed hours per week, company location and verification contacts, supervisor contact information, and full explanatory duty summaries.",
 			SuggestedThemeID:   &themeCV,
-			TemplateSetID:      renderer.TemplateDetailedImmigrationCVID,
+			TemplateSetID:      domain.TemplateDetailedImmigrationCVID,
 			Language:           domain.DefaultLanguage,
 			CreatedAt:          now,
 			UpdatedAt:          now,
@@ -237,9 +251,9 @@ func EnsureTenantProvisionedRepos(
 	defaultBranchID := domain.DefaultBranchID(userID)
 	existingBranch, err := branchRepo.GetBranch(ctx, userID, defaultBranchID)
 	if err != nil || existingBranch == nil {
-		tmpl, err := templateRepo.GetTemplate(ctx, userID, renderer.TemplateStandardCleanID)
+		tmpl, err := templateRepo.GetTemplate(ctx, userID, domain.TemplateStandardCleanID)
 		if err != nil {
-			tmpl, err = templateRepo.GetTemplate(ctx, domain.SystemUserID, renderer.TemplateStandardCleanID)
+			tmpl, err = templateRepo.GetTemplate(ctx, domain.SystemUserID, domain.TemplateStandardCleanID)
 			if err != nil {
 				return fmt.Errorf("finding standard template for default branch: %w", err)
 			}
@@ -251,7 +265,7 @@ func EnsureTenantProvisionedRepos(
 			UserID:                   userID,
 			Name:                     domain.DefaultBranchName,
 			IsDefault:                true,
-			TemplateSetID:          renderer.TemplateStandardCleanID,
+			TemplateSetID:          domain.TemplateStandardCleanID,
 			LastSyncedMainRevision: existingProf.MainRevision,
 			CreatedAt:              now,
 			UpdatedAt:                now,
@@ -266,9 +280,16 @@ func EnsureTenantProvisionedRepos(
 		}
 
 		tailoredContent := domain.SnapshotToTailoredContent(snapshot)
-		rendered, err := renderer.Render(ctx, tmpl, existingProf, tailoredContent)
-		if err != nil {
-			return fmt.Errorf("rendering default branch initial version: %w", err)
+		var htmlOut, mdOut, txtOut string
+		initialRenderer := InitialRendererFromContext(ctx)
+		if initialRenderer != nil {
+			rendered, err := initialRenderer.Render(ctx, tmpl, existingProf, tailoredContent)
+			if err != nil {
+				return fmt.Errorf("rendering default branch initial version: %w", err)
+			}
+			htmlOut, mdOut, txtOut = rendered.HTML, rendered.Markdown, rendered.PlainText
+		} else {
+			htmlOut, mdOut, txtOut = renderDefaultFallback(tmpl, existingProf, tailoredContent)
 		}
 
 		verID := "ver-default-" + userID
@@ -280,14 +301,14 @@ func EnsureTenantProvisionedRepos(
 			VersionNumber:      1,
 			Status:           domain.VersionStatusCompleted,
 			MainRevisionUsed: existingProf.MainRevision,
-			TemplateSetIDUsed: renderer.TemplateStandardCleanID,
+			TemplateSetIDUsed: domain.TemplateStandardCleanID,
 			ProviderUsed:     "none",
 			ModelUsed:        "none",
 			SourceType:       domain.SourceTypeMainProfile,
 			TailoredContent:    tailoredContent,
-			HTMLOutput:         rendered.HTML,
-			MarkdownOutput:     rendered.Markdown,
-			PlainTextOutput:    rendered.PlainText,
+			HTMLOutput:         htmlOut,
+			MarkdownOutput:     mdOut,
+			PlainTextOutput:    txtOut,
 			CreatedAt:          now,
 			CompletedAt:        &now,
 		}
@@ -300,6 +321,21 @@ func EnsureTenantProvisionedRepos(
 	}
 
 	return nil
+}
+
+func renderDefaultFallback(_ *domain.TemplateSet, profile *domain.Profile, _ *domain.TailoredContent) (string, string, string) {
+	name := "Default User"
+	if profile != nil && profile.FullName != "" {
+		name = profile.FullName
+	}
+	headline := "Software Engineer"
+	if profile != nil && profile.Headline != "" {
+		headline = profile.Headline
+	}
+	html := fmt.Sprintf("<!DOCTYPE html><html><head><title>%s - Resume</title></head><body><h1>%s</h1><p>%s</p></body></html>", name, name, headline)
+	md := fmt.Sprintf("# %s\n\n%s\n", name, headline)
+	txt := fmt.Sprintf("%s\n%s\n", name, headline)
+	return html, md, txt
 }
 
 // SeedDefaultData idempotently populates built-in templates, presets, default user profile,
@@ -329,12 +365,12 @@ func SeedDefaultData(
 	}
 
 	// 1. Seed Built-in Template Sets under system
-	templates := renderer.DefaultTemplateSets()
+	templates := domain.DefaultTemplateSets()
 	for _, tmpl := range templates {
 		tmpl.UserID = domain.SystemUserID
 		existing, err := templateRepo.GetTemplate(ctx, domain.SystemUserID, tmpl.ID)
 		if err != nil || existing == nil {
-			if err := renderer.Validate(&tmpl); err != nil {
+			if err := ValidateTemplateSet(&tmpl); err != nil {
 				return fmt.Errorf("validating built-in template %s: %w", tmpl.Name, err)
 			}
 			if err := templateRepo.CreateTemplate(ctx, &tmpl); err != nil && !errors.Is(err, domain.ErrConflict) {

@@ -6,17 +6,16 @@ import (
 	"gorm.io/gorm"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 	"resumeee/internal/repository"
 )
 
 const (
 	// Built-in Template Set IDs
-	TemplateStandardCleanID         = renderer.TemplateStandardCleanID
-	TemplateDetailedImmigrationCVID = renderer.TemplateDetailedImmigrationCVID
-	TemplateATSMinimalTxtID         = renderer.TemplateATSMinimalTxtID
-	TemplateATSHybridTechID         = renderer.TemplateATSHybridTechID
-	TemplateATSExecutiveCleanID     = renderer.TemplateATSExecutiveCleanID
+	TemplateStandardCleanID         = domain.TemplateStandardCleanID
+	TemplateDetailedImmigrationCVID = domain.TemplateDetailedImmigrationCVID
+	TemplateATSMinimalTxtID         = domain.TemplateATSMinimalTxtID
+	TemplateATSHybridTechID         = domain.TemplateATSHybridTechID
+	TemplateATSExecutiveCleanID     = domain.TemplateATSExecutiveCleanID
 
 	// Built-in Preset IDs
 	Preset1PageTechResumeID          = domain.Preset1PageTechResumeID

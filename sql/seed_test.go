@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 )
 
 func TestSeedDefaultData_FirstBoot(t *testing.T) {
@@ -40,7 +39,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(renderer.DefaultTemplateSets())
+	expectedTemplateCount := len(domain.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount || len(templates) != 5 {
 		t.Fatalf("expected exactly %d built-in templates (count 5), got %d", expectedTemplateCount, len(templates))
 	}
@@ -203,7 +202,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(renderer.DefaultTemplateSets())
+	expectedTemplateCount := len(domain.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount {
 		t.Errorf("expected exactly %d templates after multiple seeds, got %d", expectedTemplateCount, len(templates))
 	}

@@ -1,9 +1,11 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	htmltemplate "html/template"
 	"strings"
 	"sync"
 	"testing"
@@ -998,7 +1000,7 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 	}
 
 	// Verify rendering with html/template context auto-escapes XSS payloads
-	parsed, err := SafeFuncMapRender(safeTmpl.HTMLTemplate, struct {
+	parsed, err := testRenderHTML(safeTmpl.HTMLTemplate, struct {
 		FullName string
 		Website  string
 	}{
@@ -1016,6 +1018,18 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 	if strings.Contains(parsed, "javascript:") {
 		t.Errorf("expected URL context to sanitize javascript: scheme, got: %s", parsed)
 	}
+}
+
+func testRenderHTML(tmplStr string, data any) (string, error) {
+	t, err := htmltemplate.New("html").Parse(tmplStr)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func TestBranchRepository_VersionCompositeUniqueConstraint(t *testing.T) {

@@ -2,29 +2,41 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"gorm.io/gorm"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 )
 
 type templateRepository struct {
-	db *gorm.DB
+	db        *gorm.DB
+	validator domain.TemplateValidator
 }
 
-// SafeFuncMap delegates to renderer.SafeFuncMap for safe, sandboxed template helper functions.
-var SafeFuncMap = renderer.SafeFuncMap
-
-// ValidateTemplateSet delegates pre-persistence dry-run validation to internal/renderer.
-func ValidateTemplateSet(tmpl *domain.TemplateSet) error {
-	return renderer.Validate(tmpl)
+// ValidateTemplateSet validates a template set using an optional injected validator or default validation.
+func ValidateTemplateSet(tmpl *domain.TemplateSet, validator ...domain.TemplateValidator) error {
+	if len(validator) > 0 && validator[0] != nil {
+		return validator[0].Validate(tmpl)
+	}
+	return domain.DefaultTemplateValidator{}.Validate(tmpl)
 }
 
-// NewTemplateRepository constructs a SQLite-backed TemplateRepository.
-func NewTemplateRepository(db *gorm.DB) domain.TemplateRepository {
-	return &templateRepository{db: db}
+func (r *templateRepository) validate(tmpl *domain.TemplateSet) error {
+	if r.validator != nil {
+		return r.validator.Validate(tmpl)
+	}
+	return domain.DefaultTemplateValidator{}.Validate(tmpl)
+}
+
+// NewTemplateRepository constructs a SQLite-backed TemplateRepository with optional injected TemplateValidator.
+func NewTemplateRepository(db *gorm.DB, validator ...domain.TemplateValidator) domain.TemplateRepository {
+	var v domain.TemplateValidator
+	if len(validator) > 0 {
+		v = validator[0]
+	}
+	return &templateRepository{db: db, validator: v}
 }
 
 // ListTemplates returns user-owned and global built-in templates.
@@ -49,20 +61,23 @@ func (r *templateRepository) GetTemplate(ctx context.Context, userID, id string)
 	return &tmpl, nil
 }
 
-// CreateTemplate validates template syntax and inserts a new template set.
+// CreateTemplate validates template syntax using the injected validator and inserts a new template set.
 func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
-	if err := ValidateTemplateSet(tmpl); err != nil {
+	if err := r.validate(tmpl); err != nil {
 		return err
 	}
 	return mapError(r.db.WithContext(ctx).Create(tmpl).Error)
 }
 
-// UpdateTemplate validates template syntax and saves modifications.
+// UpdateTemplate validates template syntax using the injected validator and saves modifications.
 func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
+	if tmpl == nil {
+		return fmt.Errorf("%w: template set cannot be nil", domain.ErrValidation)
+	}
 	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
-	if err := ValidateTemplateSet(tmpl); err != nil {
+	if err := r.validate(tmpl); err != nil {
 		return err
 	}
 	var existing domain.TemplateSet
@@ -98,9 +113,4 @@ func (r *templateRepository) DeleteTemplate(ctx context.Context, userID, id stri
 		return domain.ErrNotFound
 	}
 	return nil
-}
-
-// SafeFuncMapRender parses and executes an HTML template string against data with contextual auto-escaping.
-func SafeFuncMapRender(tmplStr string, data any) (string, error) {
-	return renderer.RenderFormat(domain.OutputFormatHTML, tmplStr, data)
 }

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"resumeee/internal/domain"
-	"resumeee/internal/renderer"
 	"resumeee/internal/repository"
 )
 
@@ -47,6 +46,14 @@ type Store struct {
 	quotas         map[string]*domain.TenantQuota
 	usageRecords   map[string]*domain.LLMUsageRecord
 	users          map[string]*domain.User
+	validator      domain.TemplateValidator
+}
+
+// SetTemplateValidator configures an optional template syntax validator.
+func (s *Store) SetTemplateValidator(v domain.TemplateValidator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.validator = v
 }
 
 // New constructs an empty, thread-safe in-memory store.
@@ -932,8 +939,15 @@ func (s *Store) GetTemplate(_ context.Context, userID, id string) (*domain.Templ
 	return clone(tmpl), nil
 }
 
+func (s *Store) validate(tmpl *domain.TemplateSet) error {
+	if s.validator != nil {
+		return s.validator.Validate(tmpl)
+	}
+	return domain.DefaultTemplateValidator{}.Validate(tmpl)
+}
+
 func (s *Store) CreateTemplate(_ context.Context, tmpl *domain.TemplateSet) error {
-	if err := renderer.Validate(tmpl); err != nil {
+	if err := s.validate(tmpl); err != nil {
 		return err
 	}
 
@@ -953,10 +967,13 @@ func (s *Store) CreateTemplate(_ context.Context, tmpl *domain.TemplateSet) erro
 }
 
 func (s *Store) UpdateTemplate(_ context.Context, tmpl *domain.TemplateSet) error {
+	if tmpl == nil {
+		return fmt.Errorf("%w: template set cannot be nil", domain.ErrValidation)
+	}
 	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
-	if err := renderer.Validate(tmpl); err != nil {
+	if err := s.validate(tmpl); err != nil {
 		return err
 	}
 

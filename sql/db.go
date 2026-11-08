@@ -28,6 +28,10 @@ func New(dsn string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to open sqlite database at %s: %w", dsn, err)
 	}
 
+	if err := RegisterNormalizationCallbacks(db); err != nil {
+		return nil, fmt.Errorf("failed to register normalization callbacks: %w", err)
+	}
+
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve generic sql.DB: %w", err)
