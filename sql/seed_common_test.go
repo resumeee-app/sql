@@ -90,3 +90,139 @@ func TestDefaultPresets(t *testing.T) {
 		t.Errorf("expected preset id %s, got %s", domain.PresetImmigrationFullHistoryCVID, presets[1].ID)
 	}
 }
+
+// TestSeedDefaultData_SystemPresetsAndTemplates verifies presets and templates are seeded under system user
+// and accessible across any tenant.
+func TestSeedDefaultData_SystemPresetsAndTemplates(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	targetUserID := "user-alice"
+
+	if err := repository.SeedDefaultData(ctx, store, store, store, store, targetUserID); err != nil {
+		t.Fatalf("SeedDefaultData failed: %v", err)
+	}
+
+	// Presets should be owned by system
+	for _, pid := range []string{domain.Preset1PageTechResumeID, domain.PresetImmigrationFullHistoryCVID} {
+		pr, err := store.GetPreset(ctx, "other-user", pid)
+		if err != nil {
+			t.Fatalf("expected preset %s to be available to other-user: %v", pid, err)
+		}
+		if pr.UserID != domain.SystemUserID {
+			t.Errorf("expected preset %s UserID to be %s, got %s", pid, domain.SystemUserID, pr.UserID)
+		}
+	}
+
+	// Templates should be owned by system or marked built-in
+	templates, err := store.ListTemplates(ctx, "other-user")
+	if err != nil {
+		t.Fatalf("failed to list templates for other-user: %v", err)
+	}
+	if len(templates) < 5 {
+		t.Errorf("expected at least 5 built-in templates, got %d", len(templates))
+	}
+	for _, tmpl := range templates {
+		if tmpl.UserID != domain.SystemUserID && !tmpl.IsBuiltIn {
+			t.Errorf("template %s should have UserID %s or IsBuiltIn=true", tmpl.ID, domain.SystemUserID)
+		}
+	}
+}
+
+// TestEnsureTenantProvisioned verifies lazy tenant onboarding provisions users, profiles, and branches.
+func TestEnsureTenantProvisioned(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	// Seed system data first
+	if err := repository.SeedDefaultData(ctx, store, store, store, store, "default"); err != nil {
+		t.Fatalf("seeding default data: %v", err)
+	}
+
+	newUID := "firebase-new-tenant-999"
+	userInfo := &domain.User{
+		ID:       newUID,
+		Email:    "newtenant@example.com",
+		FullName: "New Tenant",
+		Role:     domain.UserRoleUser,
+		IsActive: true,
+	}
+
+	if err := repository.EnsureTenantProvisioned(ctx, store, newUID, userInfo); err != nil {
+		t.Fatalf("EnsureTenantProvisioned failed: %v", err)
+	}
+
+	// 1. Verify user record
+	u, err := store.User().GetUser(ctx, newUID)
+	if err != nil {
+		t.Fatalf("failed to get provisioned user: %v", err)
+	}
+	if u.Email != "newtenant@example.com" || u.FullName != "New Tenant" {
+		t.Errorf("unexpected user record: %+v", u)
+	}
+
+	// 2. Verify profile
+	prof, err := store.Profile().GetProfile(ctx, newUID)
+	if err != nil {
+		t.Fatalf("failed to get provisioned profile: %v", err)
+	}
+	if prof.UserID != newUID || prof.Email != "newtenant@example.com" {
+		t.Errorf("unexpected profile: %+v", prof)
+	}
+
+	// 3. Verify default branch
+	branches, err := store.Branch().ListBranches(ctx, newUID)
+	if err != nil {
+		t.Fatalf("failed to list branches: %v", err)
+	}
+	if len(branches) != 1 || !branches[0].IsDefault {
+		t.Fatalf("expected 1 default branch, got %+v", branches)
+	}
+
+	// 4. Verify idempotent second call
+	if err := repository.EnsureTenantProvisioned(ctx, store, newUID, userInfo); err != nil {
+		t.Fatalf("second call to EnsureTenantProvisioned failed: %v", err)
+	}
+}
+
+// TestEnsureTenantProvisioned_Concurrent verifies that concurrent calls to EnsureTenantProvisioned
+// for the same tenant execute safely without race conditions or duplicate entries.
+func TestEnsureTenantProvisioned_Concurrent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	if err := repository.SeedDefaultData(ctx, store, store, store, store, "default"); err != nil {
+		t.Fatalf("seeding default data: %v", err)
+	}
+
+	newUID := "concurrent-user-abc"
+	userInfo := &domain.User{
+		ID:       newUID,
+		Email:    "concurrent@example.com",
+		FullName: "Concurrent User",
+		Role:     domain.UserRoleUser,
+	}
+
+	const workers = 10
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			errCh <- repository.EnsureTenantProvisioned(ctx, store, newUID, userInfo)
+		}()
+	}
+
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent worker %d failed: %v", i, err)
+		}
+	}
+
+	branches, err := store.Branch().ListBranches(ctx, newUID)
+	if err != nil {
+		t.Fatalf("listing branches: %v", err)
+	}
+	if len(branches) != 1 {
+		t.Errorf("expected exactly 1 branch, got %d", len(branches))
+	}
+}
+
+

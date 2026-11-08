@@ -168,6 +168,7 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (rep
 		BranchRepo:   NewBranchRepository(db),
 		PDFJobRepo:   NewPDFParseJobRepository(db),
 		QuotaRepo:    NewQuotaRepository(db),
+		UserRepo:     NewUserRepository(db),
 		Closer:       closer,
 	}, nil
 }

@@ -46,6 +46,7 @@ type Store struct {
 	pdfJobs        map[string]*domain.PDFParseJob
 	quotas         map[string]*domain.TenantQuota
 	usageRecords   map[string]*domain.LLMUsageRecord
+	users          map[string]*domain.User
 }
 
 // New constructs an empty, thread-safe in-memory store.
@@ -65,6 +66,7 @@ func New() *Store {
 		pdfJobs:        make(map[string]*domain.PDFParseJob),
 		quotas:         make(map[string]*domain.TenantQuota),
 		usageRecords:   make(map[string]*domain.LLMUsageRecord),
+		users:          make(map[string]*domain.User),
 	}
 }
 
@@ -99,6 +101,9 @@ func (s *Store) PDFJob() domain.PDFParseJobRepository { return s }
 // Quota returns this store as domain.QuotaRepository.
 func (s *Store) Quota() domain.QuotaRepository { return s }
 
+// User returns this store as domain.UserRepository.
+func (s *Store) User() domain.UserRepository { return s }
+
 // Close releases any allocated store resources.
 func (s *Store) Close() error { return nil }
 
@@ -111,6 +116,7 @@ func (s *Store) StoreBundle() *repository.StoreBundle {
 		TemplateRepo: s,
 		PDFJobRepo:   s,
 		QuotaRepo:    s,
+		UserRepo:     s,
 		Closer:       s.Close,
 	}
 }
@@ -283,7 +289,7 @@ func (s *Store) ReplaceCareerGraph(_ context.Context, userID string, snapshot *d
 	}
 
 	for _, sk := range snapshot.AllSkills() {
-		if !sk.IsGlobal && sk.UserID != "system" {
+		if !sk.IsGlobal && sk.UserID != domain.SystemUserID {
 			sk.UserID = userID
 			s.skills[sk.ID] = clone(&sk)
 		}
@@ -384,14 +390,14 @@ func (s *Store) CreateSkill(_ context.Context, skill *domain.Skill) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if skill.IsGlobal && skill.UserID != "system" {
+	if skill.IsGlobal && skill.UserID != domain.SystemUserID {
 		return fmt.Errorf("%w: only system may create global skills", domain.ErrForbidden)
 	}
 	if _, exists := s.skills[skill.ID]; exists {
 		return domain.ErrConflict
 	}
 	s.skills[skill.ID] = clone(skill)
-	if skill.UserID != "system" {
+	if skill.UserID != domain.SystemUserID {
 		s.incrementRevisionLocked(skill.UserID)
 	}
 	return nil
@@ -812,7 +818,7 @@ func (s *Store) ListPresets(_ context.Context, userID string) ([]domain.Preset, 
 
 	var list []domain.Preset
 	for _, pr := range s.presets {
-		if pr.UserID == userID || pr.UserID == "system" || strings.HasPrefix(pr.ID, "builtin-") || pr.IsBuiltIn() {
+		if pr.UserID == userID || pr.UserID == domain.SystemUserID || strings.HasPrefix(pr.ID, "builtin-") || pr.IsBuiltIn() {
 			list = append(list, *clone(pr))
 		}
 	}
@@ -824,7 +830,7 @@ func (s *Store) GetPreset(_ context.Context, userID, id string) (*domain.Preset,
 	defer s.mu.RUnlock()
 
 	pr, ok := s.presets[id]
-	if !ok || (pr.UserID != userID && pr.UserID != "system" && !strings.HasPrefix(pr.ID, "builtin-") && !pr.IsBuiltIn()) {
+	if !ok || (pr.UserID != userID && pr.UserID != domain.SystemUserID && !strings.HasPrefix(pr.ID, "builtin-") && !pr.IsBuiltIn()) {
 		return nil, domain.ErrNotFound
 	}
 	return clone(pr), nil
@@ -875,7 +881,7 @@ func (s *Store) DeletePreset(_ context.Context, userID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if strings.HasPrefix(id, "builtin-") || userID == "system" {
+	if strings.HasPrefix(id, "builtin-") || userID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	existing, exists := s.presets[id]
@@ -899,7 +905,7 @@ func (s *Store) ListTemplates(_ context.Context, userID string) ([]domain.Templa
 
 	var list []domain.TemplateSet
 	for _, tmpl := range s.templates {
-		if tmpl.UserID == userID || tmpl.IsBuiltIn {
+		if tmpl.UserID == userID || tmpl.IsBuiltIn || tmpl.UserID == domain.SystemUserID {
 			list = append(list, *clone(tmpl))
 		}
 	}
@@ -914,7 +920,7 @@ func (s *Store) GetTemplate(_ context.Context, userID, id string) (*domain.Templ
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
-	if tmpl.UserID != userID && !tmpl.IsBuiltIn {
+	if tmpl.UserID != userID && !tmpl.IsBuiltIn && tmpl.UserID != domain.SystemUserID {
 		return nil, domain.ErrNotFound
 	}
 	return clone(tmpl), nil
@@ -941,7 +947,7 @@ func (s *Store) CreateTemplate(_ context.Context, tmpl *domain.TemplateSet) erro
 }
 
 func (s *Store) UpdateTemplate(_ context.Context, tmpl *domain.TemplateSet) error {
-	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == "system" {
+	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if err := renderer.Validate(tmpl); err != nil {
@@ -955,7 +961,7 @@ func (s *Store) UpdateTemplate(_ context.Context, tmpl *domain.TemplateSet) erro
 	if !exists {
 		return domain.ErrNotFound
 	}
-	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if existing.UserID != tmpl.UserID {
@@ -974,7 +980,7 @@ func (s *Store) DeleteTemplate(_ context.Context, userID, id string) error {
 	if !exists {
 		return domain.ErrNotFound
 	}
-	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if existing.UserID != userID {
@@ -1559,4 +1565,57 @@ func (s *Store) ListUsageRecords(_ context.Context, userID string, limit int) ([
 	}
 	return list, nil
 }
+
+// -----------------------------------------------------------------------------
+// Users
+// -----------------------------------------------------------------------------
+
+func (s *Store) GetUser(_ context.Context, id string) (*domain.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	u, ok := s.users[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	return clone(u), nil
+}
+
+func (s *Store) UpsertUser(_ context.Context, user *domain.User) error {
+	if user == nil || user.ID == "" {
+		return domain.ErrValidation
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	existing, ok := s.users[user.ID]
+	if !ok {
+		u := clone(user)
+		if u.CreatedAt.IsZero() {
+			u.CreatedAt = now
+		}
+		u.UpdatedAt = now
+		s.users[user.ID] = u
+		return nil
+	}
+
+	existing.Email = user.Email
+	existing.FullName = user.FullName
+	// Preserve existing admin role unless explicitly promoted
+	if existing.Role == domain.UserRoleAdmin && user.Role != domain.UserRoleAdmin {
+		existing.Role = domain.UserRoleAdmin
+	} else if user.Role != "" {
+		existing.Role = user.Role
+	}
+	if user.Tier != "" {
+		existing.Tier = user.Tier
+	}
+	existing.IsActive = user.IsActive
+	existing.UpdatedAt = now
+	s.users[user.ID] = existing
+	return nil
+}
+
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"resumeee/internal/domain"
@@ -85,11 +86,14 @@ func DefaultGlobalSkills() []domain.Skill {
 // DefaultPresets returns the system default built-in presets customized for the specified user.
 //
 // Parameters:
-//   - userID: The target user identifier.
+//   - userID: The target user identifier (defaults to domain.SystemUserID if empty).
 //
 // Returns:
 //   - []domain.Preset: The list of system built-in presets.
 func DefaultPresets(userID string) []domain.Preset {
+	if userID == "" {
+		userID = domain.SystemUserID
+	}
 	now := time.Now().UTC()
 	themeStd := renderer.TemplateStandardCleanID
 	themeCV := renderer.TemplateDetailedImmigrationCVID
@@ -121,6 +125,183 @@ func DefaultPresets(userID string) []domain.Preset {
 	}
 }
 
+const tenantStripeCount = 64
+
+var tenantProvisionStripes [tenantStripeCount]sync.Mutex
+
+func getTenantProvisionLock(userID string) *sync.Mutex {
+	var h uint32 = 2166136261 // FNV-1a 32-bit offset basis
+	for i := 0; i < len(userID); i++ {
+		h ^= uint32(userID[i])
+		h *= 16777619 // FNV-1a 32-bit prime
+	}
+	return &tenantProvisionStripes[h%tenantStripeCount]
+}
+
+// EnsureTenantProvisioned idempotently ensures a tenant has an upserted user record,
+// default profile, and default resume branch with an initial active rendered version.
+func EnsureTenantProvisioned(
+	ctx context.Context,
+	store Store,
+	userID string,
+	userInfo ...*domain.User,
+) error {
+	if store == nil {
+		return errors.New("store cannot be nil")
+	}
+	return EnsureTenantProvisionedRepos(
+		ctx,
+		store.Profile(),
+		store.Branch(),
+		store.Template(),
+		store.User(),
+		userID,
+		userInfo...,
+	)
+}
+
+// EnsureTenantProvisionedRepos idempotently provisions tenant entities using explicit repository handles.
+func EnsureTenantProvisionedRepos(
+	ctx context.Context,
+	profileRepo domain.ProfileRepository,
+	branchRepo domain.BranchRepository,
+	templateRepo domain.TemplateRepository,
+	userRepo domain.UserRepository,
+	userID string,
+	userInfo ...*domain.User,
+) error {
+	if userID == "" {
+		return fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+	}
+
+	mu := getTenantProvisionLock(userID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 1. Upsert User record if UserRepository is provided
+	if userRepo != nil {
+		var u *domain.User
+		if len(userInfo) > 0 && userInfo[0] != nil {
+			u = userInfo[0]
+			if u.ID == "" {
+				u.ID = userID
+			}
+		} else {
+			u = &domain.User{
+				ID:       userID,
+				Role:     domain.UserRoleUser,
+				IsActive: true,
+			}
+		}
+		if existing, err := userRepo.GetUser(ctx, userID); err == nil && existing != nil {
+			if existing.Role == domain.UserRoleAdmin && u.Role != domain.UserRoleAdmin {
+				u.Role = domain.UserRoleAdmin
+			}
+		}
+		if err := userRepo.UpsertUser(ctx, u); err != nil {
+			return fmt.Errorf("upserting tenant user: %w", err)
+		}
+	}
+
+	// 2. Seed Default Profile if missing
+	existingProf, err := profileRepo.GetProfile(ctx, userID)
+	if err != nil || existingProf == nil {
+		fullName := "Default User"
+		email := ""
+		if len(userInfo) > 0 && userInfo[0] != nil {
+			if userInfo[0].FullName != "" {
+				fullName = userInfo[0].FullName
+			}
+			email = userInfo[0].Email
+		}
+		defaultProfile := domain.Profile{
+			ID:                 "profile-" + userID,
+			UserID:             userID,
+			FullName:           fullName,
+			Email:              email,
+			Headline:           "Software Engineer",
+			MasterRevision:     1,
+			DefaultProvider:    "gemini",
+			DefaultModel:       "gemini-3.8-flash",
+			GlobalWritingRules: "Prioritize measurable outcomes, active voice, and clear technical context.",
+			CreatedAt:          time.Now().UTC(),
+			UpdatedAt:          time.Now().UTC(),
+		}
+		if err := profileRepo.UpsertProfile(ctx, &defaultProfile); err != nil {
+			return fmt.Errorf("seeding tenant default profile: %w", err)
+		}
+		existingProf = &defaultProfile
+	}
+
+	// 3. Seed Default Branch if missing
+	defaultBranchID := domain.DefaultBranchID(userID)
+	existingBranch, err := branchRepo.GetBranch(ctx, userID, defaultBranchID)
+	if err != nil || existingBranch == nil {
+		tmpl, err := templateRepo.GetTemplate(ctx, userID, renderer.TemplateStandardCleanID)
+		if err != nil {
+			tmpl, err = templateRepo.GetTemplate(ctx, domain.SystemUserID, renderer.TemplateStandardCleanID)
+			if err != nil {
+				return fmt.Errorf("finding standard template for default branch: %w", err)
+			}
+		}
+
+		now := time.Now().UTC()
+		defaultBranch := domain.Branch{
+			ID:                       defaultBranchID,
+			UserID:                   userID,
+			Name:                     domain.DefaultBranchName,
+			IsDefault:                true,
+			TemplateSetID:            renderer.TemplateStandardCleanID,
+			LastSyncedMasterRevision: existingProf.MasterRevision,
+			CreatedAt:                now,
+			UpdatedAt:                now,
+		}
+		if err := branchRepo.CreateBranch(ctx, &defaultBranch); err != nil && !errors.Is(err, domain.ErrConflict) {
+			return fmt.Errorf("seeding default branch: %w", err)
+		}
+
+		snapshot, err := profileRepo.GetSnapshot(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("getting snapshot for default branch: %w", err)
+		}
+
+		tailoredContent := domain.SnapshotToTailoredContent(snapshot)
+		rendered, err := renderer.Render(ctx, tmpl, existingProf, tailoredContent)
+		if err != nil {
+			return fmt.Errorf("rendering default branch initial version: %w", err)
+		}
+
+		verID := "ver-default-" + userID
+		ver := domain.BranchVersion{
+			ID:                 verID,
+			UserID:             userID,
+			ResumeID:           defaultBranch.ID,
+			BranchID:           defaultBranch.ID,
+			VersionNumber:      1,
+			Status:             domain.VersionStatusCompleted,
+			MasterRevisionUsed: existingProf.MasterRevision,
+			TemplateSetIDUsed:  renderer.TemplateStandardCleanID,
+			ProviderUsed:       "none",
+			ModelUsed:          "none",
+			SourceType:         domain.SourceTypeMasterProfile,
+			TailoredContent:    tailoredContent,
+			HTMLOutput:         rendered.HTML,
+			MarkdownOutput:     rendered.Markdown,
+			PlainTextOutput:    rendered.PlainText,
+			CreatedAt:          now,
+			CompletedAt:        &now,
+		}
+		if err := branchRepo.CreateVersion(ctx, &ver); err != nil && !errors.Is(err, domain.ErrConflict) {
+			return fmt.Errorf("seeding default branch version: %w", err)
+		}
+
+		defaultBranch.ActiveVersionID = &ver.ID
+		_ = branchRepo.UpdateBranch(ctx, &defaultBranch)
+	}
+
+	return nil
+}
+
 // SeedDefaultData idempotently populates built-in templates, presets, default user profile,
 // and default resume branch across any storage backend implementing the domain repository interfaces.
 //
@@ -147,35 +328,36 @@ func SeedDefaultData(
 		targetUserID = defaultUserID[0]
 	}
 
-	// 1. Seed Built-in Template Sets
+	// 1. Seed Built-in Template Sets under system
 	templates := renderer.DefaultTemplateSets()
 	for _, tmpl := range templates {
-		existing, err := templateRepo.GetTemplate(ctx, targetUserID, tmpl.ID)
+		tmpl.UserID = domain.SystemUserID
+		existing, err := templateRepo.GetTemplate(ctx, domain.SystemUserID, tmpl.ID)
 		if err != nil || existing == nil {
 			if err := renderer.Validate(&tmpl); err != nil {
 				return fmt.Errorf("validating built-in template %s: %w", tmpl.Name, err)
 			}
-			if err := templateRepo.CreateTemplate(ctx, &tmpl); err != nil {
+			if err := templateRepo.CreateTemplate(ctx, &tmpl); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return fmt.Errorf("seeding template %s: %w", tmpl.Name, err)
 			}
 		}
 	}
 
-	// 2. Seed Built-in Presets
-	presets := DefaultPresets(targetUserID)
+	// 2. Seed Built-in Presets under system
+	presets := DefaultPresets(domain.SystemUserID)
 	for _, preset := range presets {
-		existing, err := presetRepo.GetPreset(ctx, targetUserID, preset.ID)
+		existing, err := presetRepo.GetPreset(ctx, domain.SystemUserID, preset.ID)
 		if err != nil || existing == nil {
-			if err := presetRepo.CreatePreset(ctx, &preset); err != nil {
+			if err := presetRepo.CreatePreset(ctx, &preset); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return fmt.Errorf("seeding preset %s: %w", preset.Name, err)
 			}
 		}
 	}
 
-	// 2.5 Seed Global Skills
+	// 2.5 Seed Global Skills under system
 	globalSkills := DefaultGlobalSkills()
 	for _, skill := range globalSkills {
-		existing, err := profileRepo.GetSkill(ctx, "system", skill.ID)
+		existing, err := profileRepo.GetSkill(ctx, domain.SystemUserID, skill.ID)
 		if err != nil || existing == nil {
 			if err := profileRepo.CreateSkill(ctx, &skill); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return fmt.Errorf("seeding global skill %s: %w", skill.Name, err)
@@ -183,91 +365,11 @@ func SeedDefaultData(
 		}
 	}
 
-	// 3. Seed Default Profile
-	existingProf, err := profileRepo.GetProfile(ctx, targetUserID)
-	if err != nil || existingProf == nil {
-		defaultProfile := domain.Profile{
-			ID:                 "profile-" + targetUserID,
-			UserID:             targetUserID,
-			FullName:           "Default User",
-			Headline:           "Software Engineer",
-			MasterRevision:     1,
-			DefaultProvider:    "gemini",
-			DefaultModel:       "gemini-3.8-flash",
-			GlobalWritingRules: "Prioritize measurable outcomes, active voice, and clear technical context.",
-			CreatedAt:          time.Now().UTC(),
-			UpdatedAt:          time.Now().UTC(),
-		}
-		if err := profileRepo.UpsertProfile(ctx, &defaultProfile); err != nil {
-			return fmt.Errorf("seeding default profile: %w", err)
-		}
-		existingProf = &defaultProfile
+	// 3. Ensure Default Tenant is provisioned
+	var userRepo domain.UserRepository
+	if ur, ok := profileRepo.(domain.UserRepository); ok {
+		userRepo = ur
 	}
-
-	// 4. Seed Default Branch
-	defaultBranchID := domain.DefaultBranchID(targetUserID)
-	existingBranch, err := branchRepo.GetBranch(ctx, targetUserID, defaultBranchID)
-	if err != nil || existingBranch == nil {
-		tmpl, err := templateRepo.GetTemplate(ctx, targetUserID, renderer.TemplateStandardCleanID)
-		if err != nil {
-			return fmt.Errorf("finding standard template for default branch: %w", err)
-		}
-
-		now := time.Now().UTC()
-		defaultBranch := domain.Branch{
-			ID:                       defaultBranchID,
-			UserID:                   targetUserID,
-			Name:                     domain.DefaultBranchName,
-			IsDefault:                true,
-			TemplateSetID:            renderer.TemplateStandardCleanID,
-			LastSyncedMasterRevision: existingProf.MasterRevision,
-			CreatedAt:                now,
-			UpdatedAt:                now,
-		}
-		if err := branchRepo.CreateBranch(ctx, &defaultBranch); err != nil {
-			return fmt.Errorf("seeding default branch: %w", err)
-		}
-
-		snapshot, err := profileRepo.GetSnapshot(ctx, targetUserID)
-		if err != nil {
-			return fmt.Errorf("getting snapshot for default branch: %w", err)
-		}
-
-		tailoredContent := domain.SnapshotToTailoredContent(snapshot)
-		rendered, err := renderer.Render(ctx, tmpl, existingProf, tailoredContent)
-		if err != nil {
-			return fmt.Errorf("rendering default branch initial version: %w", err)
-		}
-
-		verID := "ver-default-" + targetUserID
-		ver := domain.BranchVersion{
-			ID:                 verID,
-			UserID:             targetUserID,
-			ResumeID:           defaultBranch.ID,
-			BranchID:           defaultBranch.ID,
-			VersionNumber:      1,
-			Status:             domain.VersionStatusCompleted,
-			MasterRevisionUsed: existingProf.MasterRevision,
-			TemplateSetIDUsed:  renderer.TemplateStandardCleanID,
-			ProviderUsed:       "none",
-			ModelUsed:          "none",
-			SourceType:         domain.SourceTypeMasterProfile,
-			TailoredContent:    tailoredContent,
-			HTMLOutput:         rendered.HTML,
-			MarkdownOutput:     rendered.Markdown,
-			PlainTextOutput:    rendered.PlainText,
-			CreatedAt:          now,
-			CompletedAt:        &now,
-		}
-		if err := branchRepo.CreateVersion(ctx, &ver); err != nil {
-			return fmt.Errorf("seeding default branch version: %w", err)
-		}
-
-		defaultBranch.ActiveVersionID = &ver.ID
-		if err := branchRepo.UpdateBranch(ctx, &defaultBranch); err != nil {
-			return fmt.Errorf("setting default branch active version: %w", err)
-		}
-	}
-
-	return nil
+	return EnsureTenantProvisionedRepos(ctx, profileRepo, branchRepo, templateRepo, userRepo, targetUserID)
 }
+

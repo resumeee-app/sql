@@ -32,7 +32,7 @@ func (r *templateRepository) ListTemplates(ctx context.Context, userID string) (
 	var templates []domain.TemplateSet
 	// Allow retrieving user-owned templates OR global built-in templates
 	err := r.db.WithContext(ctx).
-		Where("user_id = ? OR is_built_in = ?", userID, true).
+		Where("user_id = ? OR is_built_in = ? OR user_id = ?", userID, true, domain.SystemUserID).
 		Find(&templates).Error
 	return templates, mapError(err)
 }
@@ -41,7 +41,7 @@ func (r *templateRepository) ListTemplates(ctx context.Context, userID string) (
 func (r *templateRepository) GetTemplate(ctx context.Context, userID, id string) (*domain.TemplateSet, error) {
 	var tmpl domain.TemplateSet
 	err := r.db.WithContext(ctx).
-		Where("(user_id = ? OR is_built_in = ?) AND id = ?", userID, true, id).
+		Where("(user_id = ? OR is_built_in = ? OR user_id = ?) AND id = ?", userID, true, domain.SystemUserID, id).
 		First(&tmpl).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -59,7 +59,7 @@ func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.Te
 
 // UpdateTemplate validates template syntax and saves modifications.
 func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
-	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == "system" {
+	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if err := ValidateTemplateSet(tmpl); err != nil {
@@ -69,7 +69,7 @@ func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.Te
 	if err := r.db.WithContext(ctx).Where("id = ?", tmpl.ID).First(&existing).Error; err != nil {
 		return mapError(err)
 	}
-	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if existing.UserID != tmpl.UserID {
@@ -84,7 +84,7 @@ func (r *templateRepository) DeleteTemplate(ctx context.Context, userID, id stri
 	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
 		return mapError(err)
 	}
-	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == "system" {
+	if existing.IsBuiltIn || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	if existing.UserID != userID {

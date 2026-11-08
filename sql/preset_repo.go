@@ -21,14 +21,14 @@ func NewPresetRepository(db *gorm.DB) domain.PresetRepository {
 // ListPresets retrieves all presets registered for the user plus system built-in presets.
 func (r *presetRepository) ListPresets(ctx context.Context, userID string) ([]domain.Preset, error) {
 	var presets []domain.Preset
-	err := r.db.WithContext(ctx).Where("user_id = ? OR user_id = 'system' OR id LIKE 'builtin-%'", userID).Find(&presets).Error
+	err := r.db.WithContext(ctx).Where("user_id = ? OR user_id = ? OR id LIKE 'builtin-%'", userID, domain.SystemUserID).Find(&presets).Error
 	return presets, mapError(err)
 }
 
 // GetPreset retrieves a preset by user and preset ID (or system built-in preset).
 func (r *presetRepository) GetPreset(ctx context.Context, userID, id string) (*domain.Preset, error) {
 	var preset domain.Preset
-	err := r.db.WithContext(ctx).Where("(user_id = ? OR user_id = 'system' OR id LIKE 'builtin-%') AND id = ?", userID, id).First(&preset).Error
+	err := r.db.WithContext(ctx).Where("(user_id = ? OR user_id = ? OR id LIKE 'builtin-%') AND id = ?", userID, domain.SystemUserID, id).First(&preset).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -42,7 +42,7 @@ func (r *presetRepository) CreatePreset(ctx context.Context, preset *domain.Pres
 
 // UpdatePreset saves changes to an existing preset record.
 func (r *presetRepository) UpdatePreset(ctx context.Context, preset *domain.Preset) error {
-	if preset != nil && (preset.IsBuiltIn() || strings.HasPrefix(preset.ID, "builtin-")) {
+	if preset != nil && (preset.IsBuiltIn() || strings.HasPrefix(preset.ID, "builtin-") || preset.UserID == domain.SystemUserID) {
 		return domain.ErrStrategyImmutable
 	}
 	return mapError(r.db.WithContext(ctx).Save(preset).Error)
@@ -50,11 +50,11 @@ func (r *presetRepository) UpdatePreset(ctx context.Context, preset *domain.Pres
 
 // DeletePreset removes a preset record by user and preset ID.
 func (r *presetRepository) DeletePreset(ctx context.Context, userID, id string) error {
-	if strings.HasPrefix(id, "builtin-") || userID == "system" {
+	if strings.HasPrefix(id, "builtin-") || userID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
 	}
 	existing, err := r.GetPreset(ctx, userID, id)
-	if err == nil && existing != nil && (existing.IsBuiltIn() || strings.HasPrefix(existing.ID, "builtin-")) {
+	if err == nil && existing != nil && (existing.IsBuiltIn() || strings.HasPrefix(existing.ID, "builtin-") || existing.UserID == domain.SystemUserID) {
 		return domain.ErrStrategyImmutable
 	}
 	res := r.db.WithContext(ctx).Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Preset{})

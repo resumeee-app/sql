@@ -969,3 +969,86 @@ func TestMemoryStore_TemplateImmutability(t *testing.T) {
 		}
 	})
 }
+
+func TestMemoryStore_UserRepository(t *testing.T) {
+	ctx := context.Background()
+	store := setupTestStore(t)
+
+	t.Run("Validation failure on nil user or empty ID", func(t *testing.T) {
+		if err := store.UpsertUser(ctx, nil); !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("expected ErrValidation for nil user, got %v", err)
+		}
+		if err := store.UpsertUser(ctx, &domain.User{ID: ""}); !errors.Is(err, domain.ErrValidation) {
+			t.Errorf("expected ErrValidation for empty ID, got %v", err)
+		}
+	})
+
+	t.Run("GetUser not found returns ErrNotFound", func(t *testing.T) {
+		_, err := store.GetUser(ctx, "non-existent")
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("Create user and retrieve", func(t *testing.T) {
+		u := &domain.User{
+			ID:       "mem-user-1",
+			Email:    "mem1@example.com",
+			FullName: "Memory User 1",
+			Role:     domain.UserRoleUser,
+			Tier:     "free",
+			IsActive: true,
+		}
+		if err := store.UpsertUser(ctx, u); err != nil {
+			t.Fatalf("failed to upsert user: %v", err)
+		}
+
+		retrieved, err := store.GetUser(ctx, "mem-user-1")
+		if err != nil {
+			t.Fatalf("failed to get user: %v", err)
+		}
+		if retrieved.Email != "mem1@example.com" {
+			t.Errorf("expected mem1@example.com, got %q", retrieved.Email)
+		}
+		if retrieved.Role != domain.UserRoleUser {
+			t.Errorf("expected user role, got %q", retrieved.Role)
+		}
+	})
+
+	t.Run("Preserve existing admin role on conflict", func(t *testing.T) {
+		adminUser := &domain.User{
+			ID:       "admin-user-mem",
+			Email:    "admin@resumeee.io",
+			FullName: "Admin Mem",
+			Role:     domain.UserRoleAdmin,
+			Tier:     "enterprise",
+			IsActive: true,
+		}
+		if err := store.UpsertUser(ctx, adminUser); err != nil {
+			t.Fatalf("failed to create admin user: %v", err)
+		}
+
+		demoteAttempt := &domain.User{
+			ID:       "admin-user-mem",
+			Email:    "admin.new@resumeee.io",
+			FullName: "Admin Mem Updated",
+			Role:     domain.UserRoleUser,
+			Tier:     "free",
+			IsActive: true,
+		}
+		if err := store.UpsertUser(ctx, demoteAttempt); err != nil {
+			t.Fatalf("failed to upsert user: %v", err)
+		}
+
+		retrieved, err := store.GetUser(ctx, "admin-user-mem")
+		if err != nil {
+			t.Fatalf("failed to retrieve user: %v", err)
+		}
+		if retrieved.Role != domain.UserRoleAdmin {
+			t.Errorf("expected role to remain %q, got %q", domain.UserRoleAdmin, retrieved.Role)
+		}
+		if retrieved.Email != "admin.new@resumeee.io" {
+			t.Errorf("expected email to be updated to admin.new@resumeee.io, got %q", retrieved.Email)
+		}
+	})
+}
