@@ -103,8 +103,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	cvPreset, ok := presetMap["Immigration Full History CV"]
 	if !ok {
 		t.Errorf("missing built-in preset 'Immigration Full History CV'")
-	} else if !cvPreset.IncludeAdminFields {
-		t.Errorf("'Immigration Full History CV' preset should have IncludeAdminFields=true")
+	} else if cvPreset.SystemInstructions == "" || cvPreset.TemplateSetID == "" {
+		t.Errorf("'Immigration Full History CV' preset missing instructions or template_set_id")
 	}
 
 	// 4. Verify default branch seeded
