@@ -423,6 +423,29 @@ func TestPresetAndTemplateRepositories(t *testing.T) {
 	if gotPreset.Name != "1-Page Tech Resume" {
 		t.Errorf("expected preset name '1-Page Tech Resume', got %s", gotPreset.Name)
 	}
+	if gotPreset.Language != domain.DefaultLanguage {
+		t.Errorf("expected default preset language %q, got %q", domain.DefaultLanguage, gotPreset.Language)
+	}
+
+	// Preset with explicit language
+	presetES := &domain.Preset{
+		ID:                 "preset-tech-es",
+		UserID:             userID,
+		Name:               "1-Page Tech Resume (Spanish)",
+		SystemInstructions: "Focus on distributed systems in Spanish.",
+		TemplateSetID:      tmpl.ID,
+		Language:           "Spanish",
+	}
+	if err := presetRepo.CreatePreset(ctx, presetES); err != nil {
+		t.Fatalf("failed to create Spanish preset: %v", err)
+	}
+	gotPresetES, err := presetRepo.GetPreset(ctx, userID, presetES.ID)
+	if err != nil {
+		t.Fatalf("failed to get Spanish preset: %v", err)
+	}
+	if gotPresetES.Language != "Spanish" {
+		t.Errorf("expected preset language 'Spanish', got %s", gotPresetES.Language)
+	}
 
 	// Verify NotFound mapping
 	_, err = presetRepo.GetPreset(ctx, userID, "non-existent")

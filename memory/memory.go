@@ -843,6 +843,9 @@ func (s *Store) CreatePreset(_ context.Context, preset *domain.Preset) error {
 	if preset == nil {
 		return domain.ErrValidation
 	}
+	if preset.Language == "" {
+		preset.Language = domain.DefaultLanguage
+	}
 	if _, exists := s.presets[preset.ID]; exists {
 		return domain.ErrConflict
 	}
@@ -871,6 +874,9 @@ func (s *Store) UpdatePreset(_ context.Context, preset *domain.Preset) error {
 	}
 	if existing.IsBuiltIn() || strings.HasPrefix(existing.ID, "builtin-") {
 		return domain.ErrStrategyImmutable
+	}
+	if preset.Language == "" {
+		preset.Language = domain.DefaultLanguage
 	}
 	preset.UpdatedAt = time.Now().UTC()
 	s.presets[preset.ID] = clone(preset)

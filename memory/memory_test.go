@@ -255,6 +255,58 @@ func TestPresetRepository_Immutability(t *testing.T) {
 	}
 }
 
+// TestPresetRepository_LanguageDefaulting verifies that empty language strings default to DefaultLanguage on Create and Update.
+func TestPresetRepository_LanguageDefaulting(t *testing.T) {
+	store := setupTestStore(t)
+	ctx := context.Background()
+	userID := "user-lang-test"
+
+	preset := &domain.Preset{
+		ID:                 "preset-lang-default",
+		UserID:             userID,
+		Name:               "Default Language Preset",
+		SystemInstructions: "Test instructions",
+		// Language is empty
+	}
+	if err := store.CreatePreset(ctx, preset); err != nil {
+		t.Fatalf("create preset: %v", err)
+	}
+
+	fetched, err := store.GetPreset(ctx, userID, preset.ID)
+	if err != nil {
+		t.Fatalf("get preset: %v", err)
+	}
+	if fetched.Language != domain.DefaultLanguage {
+		t.Errorf("expected default language %q on create, got: %q", domain.DefaultLanguage, fetched.Language)
+	}
+
+	// Update with explicit language
+	fetched.Language = "Spanish"
+	if err := store.UpdatePreset(ctx, fetched); err != nil {
+		t.Fatalf("update preset with Spanish: %v", err)
+	}
+	fetched2, err := store.GetPreset(ctx, userID, preset.ID)
+	if err != nil {
+		t.Fatalf("get preset after update: %v", err)
+	}
+	if fetched2.Language != "Spanish" {
+		t.Errorf("expected Spanish, got: %q", fetched2.Language)
+	}
+
+	// Update with empty language -> should default back to DefaultLanguage
+	fetched2.Language = ""
+	if err := store.UpdatePreset(ctx, fetched2); err != nil {
+		t.Fatalf("update preset with empty language: %v", err)
+	}
+	fetched3, err := store.GetPreset(ctx, userID, preset.ID)
+	if err != nil {
+		t.Fatalf("get preset after empty language update: %v", err)
+	}
+	if fetched3.Language != domain.DefaultLanguage {
+		t.Errorf("expected default language %q when updated with empty string, got: %q", domain.DefaultLanguage, fetched3.Language)
+	}
+}
+
 // TestTemplateRepository_Validation verifies template validation on persistence.
 func TestTemplateRepository_Validation(t *testing.T) {
 	store := setupTestStore(t)
