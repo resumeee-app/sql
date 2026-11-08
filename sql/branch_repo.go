@@ -20,24 +20,24 @@ func NewBranchRepository(db *gorm.DB) domain.BranchRepository {
 	return &branchRepository{db: db}
 }
 
-// ListBranches retrieves all branches for a user and calculates staleness against the current master revision.
+// ListBranches retrieves all branches for a user and calculates staleness against the current main revision.
 func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]domain.Branch, error) {
 	var branches []domain.Branch
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("is_default DESC, created_at DESC").Find(&branches).Error; err != nil {
 		return nil, mapError(err)
 	}
 
-	var currentMasterRev int64
+	var currentMainRev int64
 	if err := r.db.WithContext(ctx).
 		Model(&domain.Profile{}).
 		Where("user_id = ?", userID).
-		Select("master_revision").
-		Scan(&currentMasterRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		Select("main_revision").
+		Scan(&currentMainRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
 	}
 
 	for i := range branches {
-		branches[i].IsStale = branches[i].IsStaleRevision(currentMasterRev)
+		branches[i].IsStale = branches[i].IsStaleRevision(currentMainRev)
 	}
 
 	return branches, nil
@@ -59,15 +59,15 @@ func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*d
 		targetUserID = branch.UserID
 	}
 
-	var currentMasterRev int64
+	var currentMainRev int64
 	if err := r.db.WithContext(ctx).
 		Model(&domain.Profile{}).
 		Where("user_id = ?", targetUserID).
-		Select("master_revision").
-		Scan(&currentMasterRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		Select("main_revision").
+		Scan(&currentMainRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
 	}
-	branch.IsStale = branch.IsStaleRevision(currentMasterRev)
+	branch.IsStale = branch.IsStaleRevision(currentMainRev)
 
 	return &branch, nil
 }
@@ -226,7 +226,7 @@ func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID st
 	return nil
 }
 
-// CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_master_revision.
+// CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_main_revision.
 func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.BranchVersion) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		parentID := version.ResumeID
@@ -254,7 +254,7 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.
 			Where("id = ?", parentID).
 			Updates(map[string]any{
 				"active_version_id":            version.ID,
-				"last_synced_master_revision":  version.MasterRevisionUsed,
+				"last_synced_main_revision":    version.MainRevisionUsed,
 				"updated_at":                   now,
 			}).Error
 	})

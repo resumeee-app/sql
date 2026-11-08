@@ -54,7 +54,7 @@ func TestDB_Initialization(t *testing.T) {
 	}
 }
 
-func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
+func TestProfileRepository_MainRevisionIncrements(t *testing.T) {
 	ctx := context.Background()
 	profileRepo, _, _, _ := setupTestDB(t)
 
@@ -75,8 +75,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get profile: %v", err)
 	}
-	if p.MasterRevision != 1 {
-		t.Errorf("expected initial MasterRevision=1, got %d", p.MasterRevision)
+	if p.MainRevision != 1 {
+		t.Errorf("expected initial MainRevision=1, got %d", p.MainRevision)
 	}
 
 	// 2. Profile Update increments revision
@@ -85,8 +85,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to update profile: %v", err)
 	}
 	p, _ = profileRepo.GetProfile(ctx, userID)
-	if p.MasterRevision != 2 {
-		t.Errorf("expected MasterRevision=2 after profile update, got %d", p.MasterRevision)
+	if p.MainRevision != 2 {
+		t.Errorf("expected MainRevision=2 after profile update, got %d", p.MainRevision)
 	}
 
 	// 3. Create Skill increments revision
@@ -100,8 +100,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to create skill: %v", err)
 	}
 	p, _ = profileRepo.GetProfile(ctx, userID)
-	if p.MasterRevision != 3 {
-		t.Errorf("expected MasterRevision=3 after CreateSkill, got %d", p.MasterRevision)
+	if p.MainRevision != 3 {
+		t.Errorf("expected MainRevision=3 after CreateSkill, got %d", p.MainRevision)
 	}
 
 	// 4. Create WorkExperience increments revision
@@ -119,8 +119,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to create experience: %v", err)
 	}
 	p, _ = profileRepo.GetProfile(ctx, userID)
-	if p.MasterRevision != 4 {
-		t.Errorf("expected MasterRevision=4 after CreateExperience, got %d", p.MasterRevision)
+	if p.MainRevision != 4 {
+		t.Errorf("expected MainRevision=4 after CreateExperience, got %d", p.MainRevision)
 	}
 
 	// 5. Create Fact increments revision
@@ -137,8 +137,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to create fact: %v", err)
 	}
 	p, _ = profileRepo.GetProfile(ctx, userID)
-	if p.MasterRevision != 5 {
-		t.Errorf("expected MasterRevision=5 after CreateFact, got %d", p.MasterRevision)
+	if p.MainRevision != 5 {
+		t.Errorf("expected MainRevision=5 after CreateFact, got %d", p.MainRevision)
 	}
 
 	// 6. Delete Experience increments revision
@@ -146,8 +146,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to delete experience: %v", err)
 	}
 	p, _ = profileRepo.GetProfile(ctx, userID)
-	if p.MasterRevision != 6 {
-		t.Errorf("expected MasterRevision=6 after DeleteExperience, got %d", p.MasterRevision)
+	if p.MainRevision != 6 {
+		t.Errorf("expected MainRevision=6 after DeleteExperience, got %d", p.MainRevision)
 	}
 }
 
@@ -290,9 +290,9 @@ func TestBranchRepository_SequentialVersionsAndRecovery(t *testing.T) {
 
 	// Create sequential versions
 	v1 := &domain.BranchVersion{
-		ID:                 "v-1",
-		BranchID:           branch.ID,
-		MasterRevisionUsed: 1,
+		ID:               "v-1",
+		BranchID:         branch.ID,
+		MainRevisionUsed: 1,
 	}
 	if err := branchRepo.CreateVersion(ctx, v1); err != nil {
 		t.Fatalf("failed to create version 1: %v", err)
@@ -305,9 +305,9 @@ func TestBranchRepository_SequentialVersionsAndRecovery(t *testing.T) {
 	}
 
 	v2 := &domain.BranchVersion{
-		ID:                 "v-2",
-		BranchID:           branch.ID,
-		MasterRevisionUsed: 2,
+		ID:               "v-2",
+		BranchID:         branch.ID,
+		MainRevisionUsed: 2,
 	}
 	if err := branchRepo.CreateVersion(ctx, v2); err != nil {
 		t.Fatalf("failed to create version 2: %v", err)
@@ -326,9 +326,9 @@ func TestBranchRepository_SequentialVersionsAndRecovery(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			v := &domain.BranchVersion{
-				ID:                 fmt.Sprintf("v-conc-%d", idx),
-				BranchID:           branch.ID,
-				MasterRevisionUsed: 2,
+				ID:               fmt.Sprintf("v-conc-%d", idx),
+				BranchID:         branch.ID,
+				MainRevisionUsed: 2,
 			}
 			if err := branchRepo.CreateVersion(ctx, v); err != nil {
 				errCh <- err
@@ -460,14 +460,14 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 
 	userID := fmt.Sprintf("user-replace-%d", time.Now().UnixNano())
 
-	snapshot := &domain.MasterProfileSnapshot{
+	snapshot := &domain.MainProfileSnapshot{
 		Profile: domain.Profile{
-			ID:             "prof-repl",
-			UserID:         userID,
-			FullName:       "Original Name",
-			MasterRevision: 10,
+			ID:           "prof-repl",
+			UserID:       userID,
+			FullName:     "Original Name",
+			MainRevision: 10,
 		},
-		MasterRevision: 10,
+		MainRevision: 10,
 		Skills: []domain.Skill{
 			{ID: "sk-1", UserID: userID, Name: "Python"},
 			{ID: "sk-2", UserID: userID, Name: "Rust"},
@@ -516,8 +516,8 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 		t.Fatalf("failed to get snapshot after replace: %v", err)
 	}
 
-	if snapAfter.MasterRevision != 10 {
-		t.Errorf("expected MasterRevision 10, got %d", snapAfter.MasterRevision)
+	if snapAfter.MainRevision != 10 {
+		t.Errorf("expected MainRevision 10, got %d", snapAfter.MainRevision)
 	}
 	if len(snapAfter.Skills) != 2 {
 		t.Errorf("expected 2 skills, got %d", len(snapAfter.Skills))
@@ -538,14 +538,14 @@ func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 	skillFact := domain.Skill{ID: "sk-fact", UserID: userID, Name: "Kafka", Category: "Messaging"}
 	skillProj := domain.Skill{ID: "sk-proj", UserID: userID, Name: "React", Category: "Frontend"}
 
-	snapshot := &domain.MasterProfileSnapshot{
+	snapshot := &domain.MainProfileSnapshot{
 		Profile: domain.Profile{
-			ID:             "prof-nested",
-			UserID:         userID,
-			FullName:       "Nested Tester",
-			MasterRevision: 1,
+			ID:           "prof-nested",
+			UserID:       userID,
+			FullName:     "Nested Tester",
+			MainRevision: 1,
 		},
-		MasterRevision: 1,
+		MainRevision: 1,
 		Skills:         []domain.Skill{skillTop}, // Notice: only sk-top is in snapshot.Skills initially
 		Experiences: []domain.WorkExperience{
 			{
@@ -622,10 +622,10 @@ func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
 
 	// Profile with revision 5
 	_ = profileRepo.UpsertProfile(ctx, &domain.Profile{
-		ID:             "p-life",
-		UserID:         userID,
-		FullName:       "Branch Tester",
-		MasterRevision: 5,
+		ID:           "p-life",
+		UserID:       userID,
+		FullName:     "Branch Tester",
+		MainRevision: 5,
 	})
 
 	// Create Branch
@@ -639,21 +639,21 @@ func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
 		t.Fatalf("failed to create branch: %v", err)
 	}
 
-	// Verify staleness is true since LastSyncedMasterRevision=0 < Profile.MasterRevision=5
+	// Verify staleness is true since LastSyncedMainRevision=0 < Profile.MainRevision=5
 	fetchedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
 	if err != nil {
 		t.Fatalf("failed to get branch: %v", err)
 	}
 	if !fetchedBranch.IsStale {
-		t.Errorf("expected branch to be stale when LastSyncedMasterRevision=0 and Profile=5")
+		t.Errorf("expected branch to be stale when LastSyncedMainRevision=0 and Profile=5")
 	}
 
 	// Create Version
 	v := &domain.BranchVersion{
-		ID:                 "ver-life-1",
-		BranchID:           b.ID,
-		MasterRevisionUsed: 5,
-		Status:             domain.VersionStatusProcessing,
+		ID:               "ver-life-1",
+		BranchID:         b.ID,
+		MainRevisionUsed: 5,
+		Status:           domain.VersionStatusProcessing,
 	}
 	if err := branchRepo.CreateVersion(ctx, v); err != nil {
 		t.Fatalf("failed to create version: %v", err)
@@ -674,8 +674,8 @@ func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
 	if updatedBranch.ActiveVersionID == nil || *updatedBranch.ActiveVersionID != v.ID {
 		t.Errorf("expected ActiveVersionID to be %s", v.ID)
 	}
-	if updatedBranch.LastSyncedMasterRevision != 5 {
-		t.Errorf("expected LastSyncedMasterRevision to be 5, got %d", updatedBranch.LastSyncedMasterRevision)
+	if updatedBranch.LastSyncedMainRevision != 5 {
+		t.Errorf("expected LastSyncedMainRevision to be 5, got %d", updatedBranch.LastSyncedMainRevision)
 	}
 	if updatedBranch.IsStale {
 		t.Errorf("expected branch to NOT be stale once synced with revision 5")
@@ -712,10 +712,10 @@ func TestProfileRepository_FullEntityCRUD(t *testing.T) {
 		FullName: "CRUD User",
 	})
 
-	// 1. IncrementMasterRevision directly
-	rev, err := profileRepo.IncrementMasterRevision(ctx, userID)
+	// 1. IncrementMainRevision directly
+	rev, err := profileRepo.IncrementMainRevision(ctx, userID)
 	if err != nil {
-		t.Fatalf("failed to direct increment master revision: %v", err)
+		t.Fatalf("failed to direct increment main revision: %v", err)
 	}
 	if rev != 2 {
 		t.Errorf("expected revision 2, got %d", rev)
@@ -1171,7 +1171,7 @@ func TestProfileRepository_SkillResolution(t *testing.T) {
 		FullName: "Skill Tester",
 	}
 	if err := profileRepo.UpsertProfile(ctx, prof); err != nil {
-		t.Fatalf("failed to create master profile: %v", err)
+		t.Fatalf("failed to create main profile: %v", err)
 	}
 
 	// 1. Create Experience with raw skill names

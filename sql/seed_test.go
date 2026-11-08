@@ -31,8 +31,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if prof.UserID != "default" {
 		t.Errorf("expected UserID 'default', got %s", prof.UserID)
 	}
-	if prof.MasterRevision != 1 {
-		t.Errorf("expected MasterRevision 1, got %d", prof.MasterRevision)
+	if prof.MainRevision != 1 {
+		t.Errorf("expected MainRevision 1, got %d", prof.MainRevision)
 	}
 
 	// 2. Verify built-in template sets
@@ -140,8 +140,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if ver.Status != domain.VersionStatusCompleted {
 		t.Errorf("expected completed status, got %s", ver.Status)
 	}
-	if ver.SourceType != domain.SourceTypeMasterProfile {
-		t.Errorf("expected SourceType %s, got %s", domain.SourceTypeMasterProfile, ver.SourceType)
+	if ver.SourceType != domain.SourceTypeMainProfile {
+		t.Errorf("expected SourceType %s, got %s", domain.SourceTypeMainProfile, ver.SourceType)
 	}
 	if ver.ProviderUsed != "none" || ver.ModelUsed != "none" {
 		t.Errorf("expected provider/model to be 'none', got provider=%s, model=%s", ver.ProviderUsed, ver.ModelUsed)
@@ -174,7 +174,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	}
 	prof.FullName = "Alice Custom Name"
 	prof.Headline = "Distinguished Architect"
-	prof.MasterRevision = 42
+	prof.MainRevision = 42
 	if err := db.Save(prof).Error; err != nil {
 		t.Fatalf("failed to update profile directly: %v", err)
 	}
@@ -194,8 +194,8 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	if profAfter.FullName != "Alice Custom Name" {
 		t.Errorf("expected FullName 'Alice Custom Name' to be preserved, got %s", profAfter.FullName)
 	}
-	if profAfter.MasterRevision != 42 {
-		t.Errorf("expected MasterRevision 42 to be preserved, got %d", profAfter.MasterRevision)
+	if profAfter.MainRevision != 42 {
+		t.Errorf("expected MainRevision 42 to be preserved, got %d", profAfter.MainRevision)
 	}
 
 	// Verify records were not duplicated

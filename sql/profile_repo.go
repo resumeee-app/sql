@@ -22,19 +22,19 @@ func NewProfileRepository(db *gorm.DB) domain.ProfileRepository {
 	return &profileRepository{db: db}
 }
 
-// incrementRevisionTx atomically increments the user's master revision within an active transaction.
+// incrementRevisionTx atomically increments the user's main revision within an active transaction.
 func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) error {
 	var prof domain.Profile
 	err := tx.Where("user_id = ?", userID).First(&prof).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			prof = domain.Profile{
-				ID:             "profile-" + userID,
-				UserID:         userID,
-				FullName:       userID,
-				MasterRevision: 1,
-				CreatedAt:      time.Now().UTC(),
-				UpdatedAt:      time.Now().UTC(),
+				ID:           "profile-" + userID,
+				UserID:       userID,
+				FullName:     userID,
+				MainRevision: 1,
+				CreatedAt:    time.Now().UTC(),
+				UpdatedAt:    time.Now().UTC(),
 			}
 			return tx.Create(&prof).Error
 		}
@@ -43,12 +43,12 @@ func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) erro
 	return tx.Model(&domain.Profile{}).
 		Where("user_id = ?", userID).
 		Updates(map[string]any{
-			"master_revision": gorm.Expr("master_revision + 1"),
-			"updated_at":      time.Now().UTC(),
+			"main_revision": gorm.Expr("main_revision + 1"),
+			"updated_at":    time.Now().UTC(),
 		}).Error
 }
 
-// GetProfile retrieves the master profile record for the specified user.
+// GetProfile retrieves the main profile record for the specified user.
 func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*domain.Profile, error) {
 	var prof domain.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil {
@@ -57,15 +57,15 @@ func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*dom
 	return &prof, nil
 }
 
-// UpsertProfile inserts or updates a profile record, incrementing the master revision.
+// UpsertProfile inserts or updates a profile record, incrementing the main revision.
 func (r *profileRepository) UpsertProfile(ctx context.Context, profile *domain.Profile) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing domain.Profile
 		err := tx.Where("user_id = ?", profile.UserID).First(&existing).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				if profile.MasterRevision == 0 {
-					profile.MasterRevision = 1
+				if profile.MainRevision == 0 {
+					profile.MainRevision = 1
 				}
 				profile.CreatedAt = time.Now().UTC()
 				profile.UpdatedAt = time.Now().UTC()
@@ -74,14 +74,14 @@ func (r *profileRepository) UpsertProfile(ctx context.Context, profile *domain.P
 			return err
 		}
 
-		profile.MasterRevision = existing.MasterRevision + 1
+		profile.MainRevision = existing.MainRevision + 1
 		profile.UpdatedAt = time.Now().UTC()
 		return tx.Model(&existing).Updates(profile).Error
 	})
 }
 
-// IncrementMasterRevision bumps the profile master revision counter and returns the new revision number.
-func (r *profileRepository) IncrementMasterRevision(ctx context.Context, userID string) (int64, error) {
+// IncrementMainRevision bumps the profile main revision counter and returns the new revision number.
+func (r *profileRepository) IncrementMainRevision(ctx context.Context, userID string) (int64, error) {
 	var newRev int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := r.incrementRevisionTx(tx, userID); err != nil {
@@ -91,14 +91,14 @@ func (r *profileRepository) IncrementMasterRevision(ctx context.Context, userID 
 		if err := tx.Where("user_id = ?", userID).First(&prof).Error; err != nil {
 			return err
 		}
-		newRev = prof.MasterRevision
+		newRev = prof.MainRevision
 		return nil
 	})
 	return newRev, err
 }
 
 // GetSnapshot retrieves the complete hydrated career graph including skills, experiences, projects, education, certifications, and facts.
-func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*domain.MasterProfileSnapshot, error) {
+func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*domain.MainProfileSnapshot, error) {
 	var prof domain.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
@@ -148,9 +148,9 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		return nil, mapError(err)
 	}
 
-	snap := &domain.MasterProfileSnapshot{
+	snap := &domain.MainProfileSnapshot{
 		Profile:        prof,
-		MasterRevision: prof.MasterRevision,
+		MainRevision:   prof.MainRevision,
 		Skills:         skills,
 		Experiences:    exps,
 		Projects:       projs,
@@ -163,7 +163,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 }
 
 // ReplaceCareerGraph atomically purges and re-inserts the full career graph from a snapshot.
-func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID string, snapshot *domain.MasterProfileSnapshot) error {
+func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID string, snapshot *domain.MainProfileSnapshot) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clean up join tables first
 		if err := tx.Exec("DELETE FROM fact_skills WHERE fact_id IN (SELECT id FROM facts WHERE user_id = ?)", userID).Error; err != nil {
@@ -275,7 +275,7 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		// Upsert profile
 		snapProf := snapshot.Profile
 		snapProf.UserID = userID
-		snapProf.MasterRevision = snapshot.MasterRevision
+		snapProf.MainRevision = snapshot.MainRevision
 		snapProf.UpdatedAt = time.Now().UTC()
 		return tx.Save(&snapProf).Error
 	})
@@ -315,7 +315,7 @@ func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*d
 	return &skill, nil
 }
 
-// CreateSkill creates a new skill and increments the master revision.
+// CreateSkill creates a new skill and increments the main revision.
 func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill) error {
 	if skill.IsGlobal && skill.UserID != "system" {
 		return fmt.Errorf("%w: only system may create global skills", domain.ErrForbidden)
@@ -331,7 +331,7 @@ func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill
 	})
 }
 
-// UpdateSkill modifies a skill and increments the master revision.
+// UpdateSkill modifies a skill and increments the main revision.
 // System-seeded global skills cannot be modified.
 func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill) error {
 	var existing domain.Skill
@@ -353,7 +353,7 @@ func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill
 	})
 }
 
-// DeleteSkill deletes a skill and cleanups join tables before incrementing master revision.
+// DeleteSkill deletes a skill and cleanups join tables before incrementing main revision.
 // System-seeded global skills cannot be deleted.
 func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) error {
 	var existing domain.Skill
@@ -530,7 +530,7 @@ func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkill
 	return resolved, nil
 }
 
-// CreateExperience creates a work experience entry and increments master revision.
+// CreateExperience creates a work experience entry and increments main revision.
 func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, exp.UserID, exp.Skills)
@@ -631,7 +631,7 @@ func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (
 	return &proj, nil
 }
 
-// CreateProject inserts a new project record and bumps master revision.
+// CreateProject inserts a new project record and bumps main revision.
 func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, proj.UserID, proj.Skills)
@@ -728,7 +728,7 @@ func (r *profileRepository) GetEducation(ctx context.Context, userID, id string)
 	return &edu, nil
 }
 
-// CreateEducation creates an education entry and increments master revision.
+// CreateEducation creates an education entry and increments main revision.
 func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(edu).Error; err != nil {
@@ -738,7 +738,7 @@ func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Edu
 	})
 }
 
-// UpdateEducation saves updated education fields and increments master revision.
+// UpdateEducation saves updated education fields and increments main revision.
 func (r *profileRepository) UpdateEducation(ctx context.Context, edu *domain.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(edu).Error; err != nil {
@@ -801,7 +801,7 @@ func (r *profileRepository) GetCertification(ctx context.Context, userID, id str
 	return &cert, nil
 }
 
-// CreateCertification inserts a certification entry and increments master revision.
+// CreateCertification inserts a certification entry and increments main revision.
 func (r *profileRepository) CreateCertification(ctx context.Context, cert *domain.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(cert).Error; err != nil {
@@ -811,7 +811,7 @@ func (r *profileRepository) CreateCertification(ctx context.Context, cert *domai
 	})
 }
 
-// UpdateCertification modifies certification attributes and bumps master revision.
+// UpdateCertification modifies certification attributes and bumps main revision.
 func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domain.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(cert).Error; err != nil {
@@ -821,7 +821,7 @@ func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domai
 	})
 }
 
-// DeleteCertification removes a certification entry and increments master revision.
+// DeleteCertification removes a certification entry and increments main revision.
 func (r *profileRepository) DeleteCertification(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Certification{})
@@ -894,7 +894,7 @@ func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*do
 	return &fact, nil
 }
 
-// CreateFact inserts a fact bullet point and increments master revision.
+// CreateFact inserts a fact bullet point and increments main revision.
 func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
@@ -909,7 +909,7 @@ func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) e
 	})
 }
 
-// UpdateFact updates fact statements, impact, or skill associations and increments master revision.
+// UpdateFact updates fact statements, impact, or skill associations and increments main revision.
 func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
@@ -927,7 +927,7 @@ func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) e
 	})
 }
 
-// DeleteFact deletes a fact bullet, unlinks associated skills, and increments master revision.
+// DeleteFact deletes a fact bullet, unlinks associated skills, and increments main revision.
 func (r *profileRepository) DeleteFact(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&domain.Fact{ID: id}).Association("Skills").Clear(); err != nil {

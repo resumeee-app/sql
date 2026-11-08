@@ -127,19 +127,19 @@ func (s *Store) incrementRevisionLocked(userID string) int64 {
 	prof, ok := s.profiles[userID]
 	if !ok {
 		prof = &domain.Profile{
-			ID:             "profile-" + userID,
-			UserID:         userID,
-			FullName:       userID,
-			MasterRevision: 1,
-			CreatedAt:      time.Now().UTC(),
-			UpdatedAt:      time.Now().UTC(),
+			ID:           "profile-" + userID,
+			UserID:       userID,
+			FullName:     userID,
+			MainRevision: 1,
+			CreatedAt:    time.Now().UTC(),
+			UpdatedAt:    time.Now().UTC(),
 		}
 		s.profiles[userID] = prof
-		return prof.MasterRevision
+		return prof.MainRevision
 	}
-	prof.MasterRevision++
+	prof.MainRevision++
 	prof.UpdatedAt = time.Now().UTC()
-	return prof.MasterRevision
+	return prof.MainRevision
 }
 
 // -----------------------------------------------------------------------------
@@ -164,8 +164,8 @@ func (s *Store) UpsertProfile(_ context.Context, profile *domain.Profile) error 
 	now := time.Now().UTC()
 	existing, ok := s.profiles[profile.UserID]
 	if !ok {
-		if profile.MasterRevision == 0 {
-			profile.MasterRevision = 1
+		if profile.MainRevision == 0 {
+			profile.MainRevision = 1
 		}
 		profile.CreatedAt = now
 		profile.UpdatedAt = now
@@ -173,20 +173,20 @@ func (s *Store) UpsertProfile(_ context.Context, profile *domain.Profile) error 
 		return nil
 	}
 
-	profile.MasterRevision = existing.MasterRevision + 1
+	profile.MainRevision = existing.MainRevision + 1
 	profile.UpdatedAt = now
 	s.profiles[profile.UserID] = clone(profile)
 	return nil
 }
 
-func (s *Store) IncrementMasterRevision(_ context.Context, userID string) (int64, error) {
+func (s *Store) IncrementMainRevision(_ context.Context, userID string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.incrementRevisionLocked(userID), nil
 }
 
-func (s *Store) GetSnapshot(_ context.Context, userID string) (*domain.MasterProfileSnapshot, error) {
+func (s *Store) GetSnapshot(_ context.Context, userID string) (*domain.MainProfileSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -195,10 +195,10 @@ func (s *Store) GetSnapshot(_ context.Context, userID string) (*domain.MasterPro
 		prof = &domain.Profile{ID: "profile-" + userID, UserID: userID}
 	}
 
-	snap := &domain.MasterProfileSnapshot{
-		Profile:        *clone(prof),
-		MasterRevision: prof.MasterRevision,
-		ExportedAt:     time.Now().UTC(),
+	snap := &domain.MainProfileSnapshot{
+		Profile:      *clone(prof),
+		MainRevision: prof.MainRevision,
+		ExportedAt:   time.Now().UTC(),
 	}
 
 	for _, sk := range s.skills {
@@ -253,7 +253,7 @@ func (s *Store) GetSnapshot(_ context.Context, userID string) (*domain.MasterPro
 	return clone(snap.ConsolidateSkills()), nil
 }
 
-func (s *Store) ReplaceCareerGraph(_ context.Context, userID string, snapshot *domain.MasterProfileSnapshot) error {
+func (s *Store) ReplaceCareerGraph(_ context.Context, userID string, snapshot *domain.MainProfileSnapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -335,7 +335,7 @@ func (s *Store) ReplaceCareerGraph(_ context.Context, userID string, snapshot *d
 
 	prof := snapshot.Profile
 	prof.UserID = userID
-	prof.MasterRevision = snapshot.MasterRevision
+	prof.MainRevision = snapshot.MainRevision
 	if prof.ID == "" {
 		prof.ID = "profile-" + userID
 	}
@@ -1004,16 +1004,16 @@ func (s *Store) ListBranches(_ context.Context, userID string) ([]domain.Branch,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var currentMasterRev int64
+	var currentMainRev int64
 	if prof, ok := s.profiles[userID]; ok {
-		currentMasterRev = prof.MasterRevision
+		currentMainRev = prof.MainRevision
 	}
 
 	var list []domain.Branch
 	for _, br := range s.branches {
 		if br.UserID == userID {
 			bCopy := clone(br)
-			bCopy.IsStale = bCopy.IsStaleRevision(currentMasterRev)
+			bCopy.IsStale = bCopy.IsStaleRevision(currentMainRev)
 			list = append(list, *bCopy)
 		}
 	}
@@ -1037,13 +1037,13 @@ func (s *Store) GetBranch(_ context.Context, userID, id string) (*domain.Branch,
 		return nil, domain.ErrNotFound
 	}
 
-	var currentMasterRev int64
+	var currentMainRev int64
 	if prof, ok := s.profiles[br.UserID]; ok {
-		currentMasterRev = prof.MasterRevision
+		currentMainRev = prof.MainRevision
 	}
 
 	bCopy := clone(br)
-	bCopy.IsStale = bCopy.IsStaleRevision(currentMasterRev)
+	bCopy.IsStale = bCopy.IsStaleRevision(currentMainRev)
 	return bCopy, nil
 }
 
@@ -1241,7 +1241,7 @@ func (s *Store) CompleteVersion(_ context.Context, version *domain.BranchVersion
 		return domain.ErrNotFound
 	}
 	br.ActiveVersionID = &version.ID
-	br.LastSyncedMasterRevision = version.MasterRevisionUsed
+	br.LastSyncedMainRevision = version.MainRevisionUsed
 	br.UpdatedAt = now
 	return nil
 }

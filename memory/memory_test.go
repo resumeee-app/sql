@@ -38,8 +38,8 @@ func TestMemoryStore_Interfaces(t *testing.T) {
 	}
 }
 
-// TestProfileRepository_MasterRevisionIncrements asserts that profile mutations increment master revision.
-func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
+// TestProfileRepository_MainRevisionIncrements asserts that profile mutations increment main revision.
+func TestProfileRepository_MainRevisionIncrements(t *testing.T) {
 	store := setupTestStore(t)
 	ctx := context.Background()
 	userID := "user-rev-test"
@@ -52,8 +52,8 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 	if err := store.UpsertProfile(ctx, prof); err != nil {
 		t.Fatalf("failed to insert profile: %v", err)
 	}
-	if prof.MasterRevision != 1 {
-		t.Errorf("expected initial master revision 1, got %d", prof.MasterRevision)
+	if prof.MainRevision != 1 {
+		t.Errorf("expected initial main revision 1, got %d", prof.MainRevision)
 	}
 
 	exp := &domain.WorkExperience{
@@ -71,11 +71,11 @@ func TestProfileRepository_MasterRevisionIncrements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get profile: %v", err)
 	}
-	if p.MasterRevision != 2 {
-		t.Errorf("expected master revision 2 after experience creation, got %d", p.MasterRevision)
+	if p.MainRevision != 2 {
+		t.Errorf("expected main revision 2 after experience creation, got %d", p.MainRevision)
 	}
 
-	rev, err := store.IncrementMasterRevision(ctx, userID)
+	rev, err := store.IncrementMainRevision(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed manual increment: %v", err)
 	}
@@ -181,12 +181,12 @@ func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 		Skills:    []domain.Skill{newSkill},
 	}
 
-	snap := &domain.MasterProfileSnapshot{
-		Profile:        *prof,
-		Skills:         []domain.Skill{newSkill},
-		Experiences:    []domain.WorkExperience{newExp},
-		Facts:          []domain.Fact{newFact},
-		MasterRevision: 10,
+	snap := &domain.MainProfileSnapshot{
+		Profile:      *prof,
+		Skills:       []domain.Skill{newSkill},
+		Experiences:  []domain.WorkExperience{newExp},
+		Facts:        []domain.Fact{newFact},
+		MainRevision: 10,
 	}
 
 	if err := store.ReplaceCareerGraph(ctx, userID, snap); err != nil {
@@ -353,17 +353,17 @@ func TestBranchRepository_LifecycleAndVersions(t *testing.T) {
 	ctx := context.Background()
 	userID := "user-branch-test"
 
-	p := &domain.Profile{ID: "prof-br", UserID: userID, FullName: "Branch Engineer", MasterRevision: 3}
+	p := &domain.Profile{ID: "prof-br", UserID: userID, FullName: "Branch Engineer", MainRevision: 3}
 	if err := store.UpsertProfile(ctx, p); err != nil {
 		t.Fatalf("upsert profile: %v", err)
 	}
 
 	branch := &domain.Branch{
-		ID:                       "br-test-1",
-		UserID:                   userID,
-		Name:                     "Tech Resume Branch",
-		TemplateSetID:            renderer.TemplateStandardCleanID,
-		LastSyncedMasterRevision: 1,
+		ID:                     "br-test-1",
+		UserID:                 userID,
+		Name:                   "Tech Resume Branch",
+		TemplateSetID:          renderer.TemplateStandardCleanID,
+		LastSyncedMainRevision: 1,
 	}
 	if err := store.CreateBranch(ctx, branch); err != nil {
 		t.Fatalf("create branch: %v", err)
@@ -374,14 +374,14 @@ func TestBranchRepository_LifecycleAndVersions(t *testing.T) {
 		t.Fatalf("get branch: %v", err)
 	}
 	if !fetchedBranch.IsStale {
-		t.Errorf("expected branch to be stale because last synced (1) < master revision (3)")
+		t.Errorf("expected branch to be stale because last synced (1) < main revision (3)")
 	}
 
 	v1 := &domain.BranchVersion{
-		ID:                 "ver-1",
-		BranchID:           branch.ID,
-		Status:             domain.VersionStatusProcessing,
-		MasterRevisionUsed: 3,
+		ID:               "ver-1",
+		BranchID:         branch.ID,
+		Status:           domain.VersionStatusProcessing,
+		MainRevisionUsed: 3,
 	}
 	if err := store.CreateVersion(ctx, v1); err != nil {
 		t.Fatalf("create version 1: %v", err)
@@ -391,10 +391,10 @@ func TestBranchRepository_LifecycleAndVersions(t *testing.T) {
 	}
 
 	v2 := &domain.BranchVersion{
-		ID:                 "ver-2",
-		BranchID:           branch.ID,
-		Status:             domain.VersionStatusPending,
-		MasterRevisionUsed: 3,
+		ID:               "ver-2",
+		BranchID:         branch.ID,
+		Status:           domain.VersionStatusPending,
+		MainRevisionUsed: 3,
 	}
 	if err := store.CreateVersion(ctx, v2); err != nil {
 		t.Fatalf("create version 2: %v", err)
@@ -415,8 +415,8 @@ func TestBranchRepository_LifecycleAndVersions(t *testing.T) {
 	if updatedBranch.ActiveVersionID == nil || *updatedBranch.ActiveVersionID != v2.ID {
 		t.Fatalf("expected active version ID %s, got %+v", v2.ID, updatedBranch.ActiveVersionID)
 	}
-	if updatedBranch.LastSyncedMasterRevision != 3 {
-		t.Errorf("expected last synced master revision 3, got %d", updatedBranch.LastSyncedMasterRevision)
+	if updatedBranch.LastSyncedMainRevision != 3 {
+		t.Errorf("expected last synced main revision 3, got %d", updatedBranch.LastSyncedMainRevision)
 	}
 	if updatedBranch.IsStale {
 		t.Errorf("expected branch to no longer be stale")
