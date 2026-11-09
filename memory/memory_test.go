@@ -312,17 +312,21 @@ func TestTemplateRepository_Validation(t *testing.T) {
 	ctx := context.Background()
 	userID := "user-tmpl-test"
 
+	// In the decoupled architecture, syntax validation belongs to domain/services,
+	// while memory.Store persists template records directly.
 	invalidTmpl := &domain.TemplateSet{
-		ID:               "invalid-tmpl",
+		ID:               "raw-syntax-tmpl",
 		UserID:           userID,
-		Name:             "Invalid Syntax",
+		Name:             "Raw Syntax",
 		HTMLTemplate:     "<div>{{ unclosed tag",
 		MarkdownTemplate: "# Resume",
 		TextTemplate:     "Plain text",
 	}
-	err := store.CreateTemplate(ctx, invalidTmpl)
-	if err == nil {
-		t.Fatal("expected validation error on invalid template syntax, got nil")
+	if err := (domain.DefaultTemplateValidator{}).Validate(invalidTmpl); err == nil {
+		t.Fatal("expected domain validation error on invalid template syntax, got nil")
+	}
+	if err := store.CreateTemplate(ctx, invalidTmpl); err != nil {
+		t.Fatalf("expected memory store to persist template record without validation: %v", err)
 	}
 
 	validTmpl := &domain.TemplateSet{

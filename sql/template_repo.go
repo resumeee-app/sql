@@ -11,32 +11,12 @@ import (
 )
 
 type templateRepository struct {
-	db        *gorm.DB
-	validator domain.TemplateValidator
+	db *gorm.DB
 }
 
-// ValidateTemplateSet validates a template set using an optional injected validator or default validation.
-func ValidateTemplateSet(tmpl *domain.TemplateSet, validator ...domain.TemplateValidator) error {
-	if len(validator) > 0 && validator[0] != nil {
-		return validator[0].Validate(tmpl)
-	}
-	return domain.DefaultTemplateValidator{}.Validate(tmpl)
-}
-
-func (r *templateRepository) validate(tmpl *domain.TemplateSet) error {
-	if r.validator != nil {
-		return r.validator.Validate(tmpl)
-	}
-	return domain.DefaultTemplateValidator{}.Validate(tmpl)
-}
-
-// NewTemplateRepository constructs a SQLite-backed TemplateRepository with optional injected TemplateValidator.
-func NewTemplateRepository(db *gorm.DB, validator ...domain.TemplateValidator) domain.TemplateRepository {
-	var v domain.TemplateValidator
-	if len(validator) > 0 {
-		v = validator[0]
-	}
-	return &templateRepository{db: db, validator: v}
+// NewTemplateRepository constructs a SQLite-backed TemplateRepository.
+func NewTemplateRepository(db *gorm.DB) domain.TemplateRepository {
+	return &templateRepository{db: db}
 }
 
 // ListTemplates returns user-owned and global built-in templates.
@@ -61,24 +41,21 @@ func (r *templateRepository) GetTemplate(ctx context.Context, userID, id string)
 	return &tmpl, nil
 }
 
-// CreateTemplate validates template syntax using the injected validator and inserts a new template set.
+// CreateTemplate inserts a new template set without rendering engine validation.
 func (r *templateRepository) CreateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
-	if err := r.validate(tmpl); err != nil {
-		return err
+	if tmpl == nil {
+		return fmt.Errorf("%w: template set cannot be nil", domain.ErrValidation)
 	}
 	return mapError(r.db.WithContext(ctx).Create(tmpl).Error)
 }
 
-// UpdateTemplate validates template syntax using the injected validator and saves modifications.
+// UpdateTemplate saves modifications for an existing template set without rendering engine validation.
 func (r *templateRepository) UpdateTemplate(ctx context.Context, tmpl *domain.TemplateSet) error {
 	if tmpl == nil {
 		return fmt.Errorf("%w: template set cannot be nil", domain.ErrValidation)
 	}
 	if tmpl.IsBuiltIn || strings.HasPrefix(tmpl.ID, "builtin-") || tmpl.UserID == domain.SystemUserID {
 		return domain.ErrStrategyImmutable
-	}
-	if err := r.validate(tmpl); err != nil {
-		return err
 	}
 	var existing domain.TemplateSet
 	if err := r.db.WithContext(ctx).Where("id = ?", tmpl.ID).First(&existing).Error; err != nil {

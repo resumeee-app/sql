@@ -67,12 +67,12 @@ func TestSeedDefaultData_Agnostic(t *testing.T) {
 	}
 }
 
-// TestValidateTemplateSet verifies template syntax checking.
-func TestValidateTemplateSet(t *testing.T) {
+// TestDefaultTemplateValidator verifies domain template syntax checking.
+func TestDefaultTemplateValidator(t *testing.T) {
 	invalid := &domain.TemplateSet{
 		HTMLTemplate: "<div>{{ invalid",
 	}
-	if err := repository.ValidateTemplateSet(invalid); err == nil {
+	if err := (domain.DefaultTemplateValidator{}).Validate(invalid); err == nil {
 		t.Fatal("expected error on invalid template, got nil")
 	}
 }

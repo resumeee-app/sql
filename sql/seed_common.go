@@ -10,32 +10,6 @@ import (
 	"resumeee/internal/domain"
 )
 
-// ValidateTemplateSet validates template set structure and syntax using an optional validator or default validation.
-func ValidateTemplateSet(tmpl *domain.TemplateSet, validator ...domain.TemplateValidator) error {
-	if len(validator) > 0 && validator[0] != nil {
-		return validator[0].Validate(tmpl)
-	}
-	return domain.DefaultTemplateValidator{}.Validate(tmpl)
-}
-
-type initialRendererContextKey struct{}
-
-// WithInitialRenderer wraps the context with an initial TemplateRenderer for baseline version generation.
-func WithInitialRenderer(ctx context.Context, renderer domain.TemplateRenderer) context.Context {
-	return context.WithValue(ctx, initialRendererContextKey{}, renderer)
-}
-
-// InitialRendererFromContext extracts a TemplateRenderer from context if present.
-func InitialRendererFromContext(ctx context.Context) domain.TemplateRenderer {
-	if ctx == nil {
-		return nil
-	}
-	if r, ok := ctx.Value(initialRendererContextKey{}).(domain.TemplateRenderer); ok {
-		return r
-	}
-	return nil
-}
-
 // DefaultGlobalSkills returns the canonical, system-seeded global skills available to all tenants.
 func DefaultGlobalSkills() []domain.Skill {
 	now := time.Now().UTC()
@@ -280,17 +254,7 @@ func EnsureTenantProvisionedRepos(
 		}
 
 		tailoredContent := domain.SnapshotToTailoredContent(snapshot)
-		var htmlOut, mdOut, txtOut string
-		initialRenderer := InitialRendererFromContext(ctx)
-		if initialRenderer != nil {
-			rendered, err := initialRenderer.Render(ctx, tmpl, existingProf, tailoredContent)
-			if err != nil {
-				return fmt.Errorf("rendering default branch initial version: %w", err)
-			}
-			htmlOut, mdOut, txtOut = rendered.HTML, rendered.Markdown, rendered.PlainText
-		} else {
-			htmlOut, mdOut, txtOut = renderDefaultFallback(tmpl, existingProf, tailoredContent)
-		}
+		htmlOut, mdOut, txtOut := renderDefaultFallback(tmpl, existingProf, tailoredContent)
 
 		verID := "ver-default-" + userID
 		ver := domain.BranchVersion{
@@ -370,9 +334,6 @@ func SeedDefaultData(
 		tmpl.UserID = domain.SystemUserID
 		existing, err := templateRepo.GetTemplate(ctx, domain.SystemUserID, tmpl.ID)
 		if err != nil || existing == nil {
-			if err := ValidateTemplateSet(&tmpl); err != nil {
-				return fmt.Errorf("validating built-in template %s: %w", tmpl.Name, err)
-			}
 			if err := templateRepo.CreateTemplate(ctx, &tmpl); err != nil && !errors.Is(err, domain.ErrConflict) {
 				return fmt.Errorf("seeding template %s: %w", tmpl.Name, err)
 			}

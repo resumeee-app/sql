@@ -47,8 +47,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	tmplMap := make(map[string]domain.TemplateSet)
 	for _, tmpl := range templates {
 		tmplMap[tmpl.Name] = tmpl
-		// Verify template syntax validity
-		if err := ValidateTemplateSet(&tmpl); err != nil {
+		// Verify template syntax validity in domain
+		if err := (domain.DefaultTemplateValidator{}).Validate(&tmpl); err != nil {
 			t.Errorf("template %s has invalid syntax: %v", tmpl.Name, err)
 		}
 	}

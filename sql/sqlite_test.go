@@ -964,28 +964,33 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 	_, _, templateRepo, _ := setupTestDB(t)
 	userID := fmt.Sprintf("user-sec-%d", time.Now().UnixNano())
 
-	// 1. Template with invalid / unclosed syntax must fail with ErrTemplateSyntax
+	validator := domain.DefaultTemplateValidator{}
+
+	// 1. Template with invalid / unclosed syntax must fail with ErrTemplateSyntax at domain validation layer
 	invalidTmpl := &domain.TemplateSet{
 		ID:           "tmpl-malformed",
 		UserID:       userID,
 		Name:         "Malformed Template",
 		HTMLTemplate: "<h1>{{.FullName", // Unclosed action tag
 	}
-	err := templateRepo.CreateTemplate(ctx, invalidTmpl)
-	if !errors.Is(err, domain.ErrTemplateSyntax) {
-		t.Errorf("expected ErrTemplateSyntax for unclosed HTML action tag, got %v", err)
+	if err := validator.Validate(invalidTmpl); !errors.Is(err, domain.ErrTemplateSyntax) {
+		t.Errorf("expected ErrTemplateSyntax in domain validator for unclosed HTML action tag, got %v", err)
 	}
 
-	// 2. Template calling non-whitelisted / dangerous functions must fail with ErrTemplateSyntax
+	// In the decoupled architecture, repository layer persists without requiring rendering engine validation
+	if err := templateRepo.CreateTemplate(ctx, invalidTmpl); err != nil {
+		t.Fatalf("expected templateRepo.CreateTemplate to persist record without validation: %v", err)
+	}
+
+	// 2. Template calling non-whitelisted / dangerous functions must fail with ErrTemplateSyntax at domain validation layer
 	dangerousTmpl := &domain.TemplateSet{
 		ID:           "tmpl-dangerous",
 		UserID:       userID,
 		Name:         "Dangerous Template",
 		HTMLTemplate: "<h1>{{exec .Command}}</h1>",
 	}
-	err = templateRepo.CreateTemplate(ctx, dangerousTmpl)
-	if !errors.Is(err, domain.ErrTemplateSyntax) {
-		t.Errorf("expected ErrTemplateSyntax for non-whitelisted function call, got %v", err)
+	if err := validator.Validate(dangerousTmpl); !errors.Is(err, domain.ErrTemplateSyntax) {
+		t.Errorf("expected ErrTemplateSyntax in domain validator for non-whitelisted function call, got %v", err)
 	}
 
 	// 3. Valid template with context-aware auto-escaping of user-supplied content
@@ -994,6 +999,9 @@ func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 		UserID:       userID,
 		Name:         "Safe Escaped Template",
 		HTMLTemplate: `<div class="user"><span id="name">{{.FullName}}</span><a href="{{.Website}}">Profile</a></div>`,
+	}
+	if err := validator.Validate(safeTmpl); err != nil {
+		t.Fatalf("expected safe template to pass domain validation: %v", err)
 	}
 	if err := templateRepo.CreateTemplate(ctx, safeTmpl); err != nil {
 		t.Fatalf("failed to create safe template: %v", err)
