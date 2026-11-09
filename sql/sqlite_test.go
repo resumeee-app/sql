@@ -1425,6 +1425,116 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 	}
 }
 
+func TestProfileRepository_GlobalSkillResolutionInEntities(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:global_skill_entities?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("failed to get sql.DB: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	profileRepo := NewProfileRepository(db)
+	systemUserID := "system"
+	tenantUserID := "tenant-456"
+
+	// 1. Seed global skill under system
+	globalSkill := &domain.Skill{
+		ID:          "global-skill-react",
+		ShortID:     "g-react",
+		UserID:      systemUserID,
+		Name:        "React",
+		Slug:        "react",
+		IsGlobal:    true,
+		Category:    "Web Technologies",
+		Proficiency: "Proficient",
+	}
+	if err := profileRepo.CreateSkill(ctx, globalSkill); err != nil {
+		t.Fatalf("failed to create global skill: %v", err)
+	}
+
+	// 2. Tenant creates a work experience referencing the global skill by ID
+	exp := &domain.WorkExperience{
+		ID:        "exp-react-1",
+		UserID:    tenantUserID,
+		Company:   "TechCorp",
+		RoleTitle: "Frontend Lead",
+		StartDate: domain.NewDate(2023, time.January, 1),
+		Skills: []domain.Skill{
+			{ID: "global-skill-react"},
+		},
+	}
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
+		t.Fatalf("failed to create experience with global skill: %v", err)
+	}
+
+	// 3. Tenant creates a project referencing the global skill by case-insensitive Name
+	proj := &domain.Project{
+		ID:     "proj-react-1",
+		UserID: tenantUserID,
+		Name:   "Component Library",
+		Role:   "Maintainer",
+		Skills: []domain.Skill{
+			{Name: "react"},
+		},
+	}
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
+		t.Fatalf("failed to create project with global skill: %v", err)
+	}
+
+	// 4. Retrieve created experience and verify skill linkage
+	fetchedExp, err := profileRepo.GetExperience(ctx, tenantUserID, exp.ID)
+	if err != nil {
+		t.Fatalf("failed to get experience: %v", err)
+	}
+	if len(fetchedExp.Skills) != 1 {
+		t.Fatalf("expected 1 skill on experience, got %d", len(fetchedExp.Skills))
+	}
+	if fetchedExp.Skills[0].ID != "global-skill-react" || !fetchedExp.Skills[0].IsGlobal || fetchedExp.Skills[0].UserID != "system" {
+		t.Errorf("expected global React skill on experience, got: %+v", fetchedExp.Skills[0])
+	}
+
+	// 5. Retrieve created project and verify skill linkage
+	fetchedProj, err := profileRepo.GetProject(ctx, tenantUserID, proj.ID)
+	if err != nil {
+		t.Fatalf("failed to get project: %v", err)
+	}
+	if len(fetchedProj.Skills) != 1 {
+		t.Fatalf("expected 1 skill on project, got %d", len(fetchedProj.Skills))
+	}
+	if fetchedProj.Skills[0].ID != "global-skill-react" || !fetchedProj.Skills[0].IsGlobal || fetchedProj.Skills[0].UserID != "system" {
+		t.Errorf("expected global React skill on project, got: %+v", fetchedProj.Skills[0])
+	}
+
+	// 6. Verify tenant profile snapshot includes the global skill in ConsolidateSkills()
+	snap, err := profileRepo.GetSnapshot(ctx, tenantUserID)
+	if err != nil {
+		t.Fatalf("failed to get snapshot: %v", err)
+	}
+	foundInSnap := false
+	for _, s := range snap.Skills {
+		if s.ID == "global-skill-react" {
+			foundInSnap = true
+			break
+		}
+	}
+	if !foundInSnap {
+		t.Errorf("expected global-skill-react to be present in snapshot.Skills after being linked to entities")
+	}
+
+	// 7. Verify no duplicate custom skill was created in tenant's custom skills
+	var customSkills []domain.Skill
+	if err := db.Where("user_id = ? AND is_global = ?", tenantUserID, false).Find(&customSkills).Error; err != nil {
+		t.Fatalf("failed to query custom skills: %v", err)
+	}
+	if len(customSkills) != 0 {
+		t.Errorf("expected 0 custom skills created for tenant, got %d: %+v", len(customSkills), customSkills)
+	}
+}
+
 func TestPDFParseJobRepository_CleanupCompletedJobs(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file:cleanup_test?mode=memory&cache=shared")
