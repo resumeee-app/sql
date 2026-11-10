@@ -1261,7 +1261,46 @@ func (s *Store) CompleteVersion(_ context.Context, version *domain.BranchVersion
 	} else {
 		br.GapReport = nil
 	}
+	if version.ATSScore != nil {
+		br.ATSScore = clone(version.ATSScore)
+	} else {
+		br.ATSScore = nil
+	}
 	br.UpdatedAt = now
+	return nil
+}
+
+func (s *Store) UpdateVersionATSScore(_ context.Context, versionID string, atsScore *domain.ATSScore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	v, ok := s.versions[versionID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	if atsScore != nil && v.ATSScore != nil {
+		return fmt.Errorf("%w: ATS score already exists for version %s", domain.ErrConflict, versionID)
+	}
+	if atsScore != nil {
+		scoreCopy := clone(atsScore)
+		scoreCopy.Normalize()
+		v.ATSScore = scoreCopy
+	} else {
+		v.ATSScore = nil
+	}
+
+	parentID := v.ResumeID
+	if parentID == "" {
+		parentID = v.BranchID
+	}
+	if br, exists := s.branches[parentID]; exists && br.ActiveVersionID != nil && *br.ActiveVersionID == versionID {
+		if v.ATSScore != nil {
+			br.ATSScore = clone(v.ATSScore)
+		} else {
+			br.ATSScore = nil
+		}
+		br.UpdatedAt = time.Now().UTC()
+	}
 	return nil
 }
 

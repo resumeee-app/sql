@@ -1692,3 +1692,105 @@ func TestBranchRepository_GapReportPropagation(t *testing.T) {
 	})
 }
 
+func TestBranchRepository_ATSScorePropagation(t *testing.T) {
+	ctx := context.Background()
+	_, _, _, branchRepo := setupTestDB(t)
+	userID := fmt.Sprintf("user-ats-%d", time.Now().UnixNano())
+
+	t.Run("UpdateVersionATSScore persists on version and propagates to parent branch when active", func(t *testing.T) {
+		b := &domain.Branch{
+			ID:            "br-ats-prop",
+			UserID:        userID,
+			Name:          "ATS Staff Engineer",
+			TemplateSetID: "tmpl-1",
+		}
+		if err := branchRepo.CreateBranch(ctx, b); err != nil {
+			t.Fatalf("failed to create branch: %v", err)
+		}
+
+		v1 := &domain.BranchVersion{
+			ID:               "ver-ats-1",
+			BranchID:         b.ID,
+			MainRevisionUsed: 1,
+			Status:           domain.VersionStatusCompleted,
+		}
+		if err := branchRepo.CreateVersion(ctx, v1); err != nil {
+			t.Fatalf("failed to create v1: %v", err)
+		}
+		if err := branchRepo.CompleteVersion(ctx, v1); err != nil {
+			t.Fatalf("failed to complete v1: %v", err)
+		}
+
+		ats1 := &domain.ATSScore{
+			ExtractionConfidenceScore: 95.0,
+			JobMatchingScore:          88.5,
+			FormatUsed:                "markdown",
+			ExtractionSummary:         "Complete parsing",
+			MatchingSummary:           "Strong alignment",
+		}
+		if err := branchRepo.UpdateVersionATSScore(ctx, v1.ID, ats1); err != nil {
+			t.Fatalf("failed to update version ATS score: %v", err)
+		}
+
+		fetchedV1, err := branchRepo.GetVersion(ctx, b.ID, v1.ID)
+		if err != nil {
+			t.Fatalf("failed to get v1: %v", err)
+		}
+		if fetchedV1.ATSScore == nil || fetchedV1.ATSScore.ExtractionConfidenceScore != 95.0 || fetchedV1.ATSScore.JobMatchingScore != 88.5 {
+			t.Fatalf("expected v1 ATSScore (95.0, 88.5), got %+v", fetchedV1.ATSScore)
+		}
+
+		fetchedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
+		if err != nil {
+			t.Fatalf("failed to get branch: %v", err)
+		}
+		if fetchedBranch.ATSScore == nil || fetchedBranch.ATSScore.ExtractionConfidenceScore != 95.0 || fetchedBranch.ATSScore.JobMatchingScore != 88.5 {
+			t.Fatalf("expected branch ATSScore propagated from active v1, got %+v", fetchedBranch.ATSScore)
+		}
+
+		// Attempting to overwrite an already-evaluated version's ATSScore returns ErrConflict
+		if err := branchRepo.UpdateVersionATSScore(ctx, v1.ID, &domain.ATSScore{ExtractionConfidenceScore: 50, JobMatchingScore: 50}); !errors.Is(err, domain.ErrConflict) {
+			t.Errorf("expected ErrConflict when updating already-scored version, got %v", err)
+		}
+
+		// Completing a new v2 without ATSScore clears parent branch ATSScore while preserving v1.ATSScore
+		v2 := &domain.BranchVersion{
+			ID:               "ver-ats-2",
+			BranchID:         b.ID,
+			MainRevisionUsed: 2,
+			Status:           domain.VersionStatusCompleted,
+		}
+		if err := branchRepo.CreateVersion(ctx, v2); err != nil {
+			t.Fatalf("failed to create v2: %v", err)
+		}
+		if err := branchRepo.CompleteVersion(ctx, v2); err != nil {
+			t.Fatalf("failed to complete v2: %v", err)
+		}
+
+		fetchedBranchAfterV2, err := branchRepo.GetBranch(ctx, userID, b.ID)
+		if err != nil {
+			t.Fatalf("failed to get branch after v2: %v", err)
+		}
+		if fetchedBranchAfterV2.ATSScore != nil {
+			t.Errorf("expected branch ATSScore to be nil for newly completed v2, got %+v", fetchedBranchAfterV2.ATSScore)
+		}
+
+		// v1 still retains its ATSScore
+		fetchedV1Again, err := branchRepo.GetVersion(ctx, b.ID, v1.ID)
+		if err != nil {
+			t.Fatalf("failed to get v1 again: %v", err)
+		}
+		if fetchedV1Again.ATSScore == nil || fetchedV1Again.ATSScore.JobMatchingScore != 88.5 {
+			t.Errorf("expected v1 ATSScore preserved, got %+v", fetchedV1Again.ATSScore)
+		}
+	})
+
+	t.Run("UpdateVersionATSScore returns ErrNotFound for nonexistent version", func(t *testing.T) {
+		err := branchRepo.UpdateVersionATSScore(ctx, "nonexistent-ver", &domain.ATSScore{ExtractionConfidenceScore: 90, JobMatchingScore: 80})
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+}
+
+

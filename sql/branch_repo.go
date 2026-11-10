@@ -284,9 +284,72 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *domain.
 			updates["gap_report"] = nil
 		}
 
+		if version.ATSScore != nil {
+			rawATS, err := json.Marshal(version.ATSScore)
+			if err != nil {
+				return fmt.Errorf("failed to marshal ats score: %w", err)
+			}
+			updates["ats_score"] = string(rawATS)
+		} else {
+			updates["ats_score"] = nil
+		}
+
 		return tx.Model(&domain.Branch{}).
 			Where("id = ?", parentID).
 			Updates(updates).Error
+	})
+}
+
+// UpdateVersionATSScore persists an ATS score evaluation on a branch version and propagates it to the parent branch if that version is currently active.
+func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID string, atsScore *domain.ATSScore) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var version domain.BranchVersion
+		if err := tx.Where("id = ?", versionID).First(&version).Error; err != nil {
+			return mapError(err)
+		}
+		if atsScore != nil && version.ATSScore != nil {
+			return fmt.Errorf("%w: ATS score already exists for version %s", domain.ErrConflict, versionID)
+		}
+
+		var serialized any
+		if atsScore != nil {
+			atsScore.Normalize()
+			raw, err := json.Marshal(atsScore)
+			if err != nil {
+				return fmt.Errorf("failed to marshal ats score: %w", err)
+			}
+			serialized = string(raw)
+			res := tx.Model(&domain.BranchVersion{}).
+				Where("id = ? AND ats_score IS NULL", versionID).
+				Update("ats_score", serialized)
+			if res.Error != nil {
+				return mapError(res.Error)
+			}
+			if res.RowsAffected == 0 {
+				return fmt.Errorf("%w: ATS score already exists for version %s", domain.ErrConflict, versionID)
+			}
+		} else {
+			if err := tx.Model(&domain.BranchVersion{}).Where("id = ?", versionID).Update("ats_score", nil).Error; err != nil {
+				return mapError(err)
+			}
+		}
+
+		parentID := version.ResumeID
+		if parentID == "" {
+			parentID = version.BranchID
+		}
+		if parentID != "" {
+			if err := tx.Model(&domain.Branch{}).
+				Where("id = ? AND active_version_id = ?", parentID, versionID).
+				Updates(map[string]any{
+					"ats_score":  serialized,
+					"updated_at": time.Now().UTC(),
+				}).Error; err != nil {
+				return mapError(err)
+			}
+		}
+
+		return nil
 	})
 }
 
