@@ -1,4 +1,4 @@
-package repository
+package sql
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 // DefaultGlobalSkills returns the canonical, system-seeded global skills available to all tenants.
@@ -130,7 +130,7 @@ func getTenantProvisionLock(userID string) *sync.Mutex {
 // default profile, and default resume branch with an initial active rendered version.
 func EnsureTenantProvisioned(
 	ctx context.Context,
-	store Store,
+	store domain.Store,
 	userID string,
 	userInfo ...*domain.User,
 ) error {

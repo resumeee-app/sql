@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 type branchRepository struct {

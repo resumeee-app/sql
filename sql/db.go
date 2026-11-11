@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -13,8 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"resumeee/internal/domain"
-	"resumeee/internal/repository"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 // New initializes a GORM SQLite database connection using the pure-Go SQLite driver,
@@ -133,7 +132,7 @@ func mapError(err error) error {
 // Returns:
 //   - repository.Store: Initialized SQLite store bundle.
 //   - error: Non-nil if directory creation, database initialization, or seeding fails.
-func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (repository.Store, error) {
+func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (domain.Store, error) {
 	if dbPath != ":memory:" && !strings.Contains(dbPath, "mode=memory") {
 		dir := filepath.Dir(dbPath)
 		if dir != "." && dir != "" {
@@ -153,7 +152,7 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (rep
 		targetUserID = defaultUserID[0]
 	}
 
-	if err := SeedDefaultData(ctx, db, targetUserID); err != nil {
+	if err := SeedDefaultDataDB(ctx, db, targetUserID); err != nil {
 		return nil, fmt.Errorf("seeding default data: %w", err)
 	}
 
@@ -165,7 +164,7 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (rep
 		return nil
 	}
 
-	return &repository.StoreBundle{
+	return &domain.StoreBundle{
 		ProfileRepo:  NewProfileRepository(db),
 		PresetRepo:   NewPresetRepository(db),
 		TemplateRepo: NewTemplateRepository(db),

@@ -1,5 +1,5 @@
-// Package sqlite provides SQLite persistence implementations for Resumeee repositories,
-// schema migrations, WAL pragma configuration, and baseline seed utilities.
+// Package sql provides multi-database relational persistence implementations for Resumeee repositories,
+// schema migrations, connection pooling, and baseline seed utilities.
 //
 // Implemented repository interfaces include:
 //   - domain.ProfileRepository: Main profiles, career graphs, and revision increments
@@ -7,4 +7,6 @@
 //   - domain.TemplateRepository: Built-in ATS and custom resume rendering templates
 //   - domain.PresetRepository: Built-in and user-defined tailoring presets
 //   - domain.PDFParseJobRepository: Asynchronous PDF resume parsing job status tracking
-package sqlite
+//   - domain.QuotaRepository: Multi-tenant token and request rate limit accounting
+//   - domain.UserRepository: Tenant identity and role management
+package sql

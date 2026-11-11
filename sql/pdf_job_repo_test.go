@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 func TestPDFParseJobRepository_Lifecycle(t *testing.T) {

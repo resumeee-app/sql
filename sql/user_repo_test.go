@@ -1,12 +1,11 @@
-package sqlite
+package sql
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"resumeee/internal/domain"
-	"resumeee/internal/repository"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 func TestUserRepository_CRUD(t *testing.T) {
@@ -151,7 +150,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	newTenantID := "tenant-sqlite-99"
-	err = repository.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
 		ID:       newTenantID,
 		Email:    "tenant99@example.com",
 		FullName: "Tenant Ninety-Nine",
@@ -191,7 +190,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Run second time idempotently with attempted role demotion
-	err = repository.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
 		ID:       newTenantID,
 		Email:    "tenant99.modified@example.com",
 		FullName: "Tenant Ninety-Nine Modified",

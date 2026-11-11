@@ -9,9 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"resumeee/internal/domain"
-	"resumeee/internal/repository"
-	"resumeee/internal/repository/memory"
+	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-storage-sql/memory"
 )
 
 func setupTestStore(t *testing.T) *memory.Store {
@@ -22,7 +21,7 @@ func setupTestStore(t *testing.T) *memory.Store {
 // TestMemoryStore_Interfaces verifies that memory.Store satisfies domain and repository interfaces.
 func TestMemoryStore_Interfaces(t *testing.T) {
 	store := setupTestStore(t)
-	var _ repository.Store = store
+	var _ domain.Store = store
 	var _ domain.ProfileRepository = store
 	var _ domain.BranchRepository = store
 	var _ domain.TemplateRepository = store

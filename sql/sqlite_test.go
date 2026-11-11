@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 func setupTestDB(t *testing.T) (

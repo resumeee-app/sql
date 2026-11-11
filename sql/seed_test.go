@@ -1,10 +1,10 @@
-package sqlite
+package sql
 
 import (
 	"context"
 	"testing"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 func TestSeedDefaultData_FirstBoot(t *testing.T) {
@@ -14,7 +14,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
 
-	if err := SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultDataDB(ctx, db); err != nil {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	}
 
 	// First seed
-	if err := SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultDataDB(ctx, db); err != nil {
 		t.Fatalf("first SeedDefaultData failed: %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 
 	// Run seeder multiple consecutive times
 	for i := 0; i < 3; i++ {
-		if err := SeedDefaultData(ctx, db); err != nil {
+		if err := SeedDefaultDataDB(ctx, db); err != nil {
 			t.Fatalf("subsequent SeedDefaultData (%d) failed: %v", i, err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 		t.Fatalf("failed to initialize test database: %v", err)
 	}
 
-	if err := SeedDefaultData(ctx, db); err != nil {
+	if err := SeedDefaultDataDB(ctx, db); err != nil {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 

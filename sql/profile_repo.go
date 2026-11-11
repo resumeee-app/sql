@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 type profileRepository struct {

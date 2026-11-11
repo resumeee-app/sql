@@ -1,12 +1,11 @@
-package sqlite
+package sql
 
 import (
 	"context"
 
 	"gorm.io/gorm"
 
-	"resumeee/internal/domain"
-	"resumeee/internal/repository"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 const (
@@ -22,8 +21,8 @@ const (
 	PresetImmigrationFullHistoryCVID = domain.PresetImmigrationFullHistoryCVID
 )
 
-// SeedDefaultData idempotently populates default user profile, built-in template sets,
-// and built-in presets into SQLite on first boot.
+// SeedDefaultDataDB idempotently populates default user profile, built-in template sets,
+// and built-in presets into the relational database on first boot.
 //
 // Parameters:
 //   - ctx: Context controlling cancellation signals.
@@ -32,12 +31,10 @@ const (
 //
 // Returns:
 //   - error: Non-nil if seeding fails.
-func SeedDefaultData(ctx context.Context, db *gorm.DB, defaultUserID ...string) error {
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		profileRepo := NewProfileRepository(tx)
-		branchRepo := NewBranchRepository(tx)
-		templateRepo := NewTemplateRepository(tx)
-		presetRepo := NewPresetRepository(tx)
-		return repository.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, defaultUserID...)
-	})
+func SeedDefaultDataDB(ctx context.Context, db *gorm.DB, defaultUserID ...string) error {
+	targetUserID := "default"
+	if len(defaultUserID) > 0 && defaultUserID[0] != "" {
+		targetUserID = defaultUserID[0]
+	}
+	return SeedBaseline(ctx, db, Config{DefaultUserID: targetUserID})
 }

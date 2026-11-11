@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 // RegisterNormalizationCallbacks registers GORM lifecycle callbacks that automatically invoke

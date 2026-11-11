@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"resumeee/internal/domain"
-	"resumeee/internal/repository"
+	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-storage-sql/sql"
 )
 
 // clone produces a detached deep copy of an entity or slice via JSON serialization.
@@ -76,7 +76,7 @@ func NewSeeded(ctx context.Context, defaultUserID ...string) (*Store, error) {
 	if len(defaultUserID) > 0 && defaultUserID[0] != "" {
 		targetUserID = defaultUserID[0]
 	}
-	if err := repository.SeedDefaultData(ctx, s, s, s, s, targetUserID); err != nil {
+	if err := sql.SeedDefaultData(ctx, s, s, s, s, targetUserID); err != nil {
 		return nil, fmt.Errorf("seeding in-memory store: %w", err)
 	}
 	return s, nil
@@ -106,9 +106,9 @@ func (s *Store) User() domain.UserRepository { return s }
 // Close releases any allocated store resources.
 func (s *Store) Close() error { return nil }
 
-// StoreBundle converts the in-memory store into a repository.StoreBundle.
-func (s *Store) StoreBundle() *repository.StoreBundle {
-	return &repository.StoreBundle{
+// StoreBundle converts the in-memory store into a domain.StoreBundle.
+func (s *Store) StoreBundle() *domain.StoreBundle {
+	return &domain.StoreBundle{
 		ProfileRepo:  s,
 		BranchRepo:   s,
 		PresetRepo:   s,
@@ -120,7 +120,7 @@ func (s *Store) StoreBundle() *repository.StoreBundle {
 	}
 }
 
-var _ repository.Store = (*Store)(nil)
+var _ domain.Store = (*Store)(nil)
 
 func (s *Store) incrementRevisionLocked(userID string) int64 {
 	prof, ok := s.profiles[userID]

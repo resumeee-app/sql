@@ -1,4 +1,4 @@
-package sqlite
+package sql
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"resumeee/internal/domain"
+	"github.com/resumeee-app/resumeee-core/domain"
 )
 
 type quotaRepository struct {
