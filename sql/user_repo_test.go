@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/resumeee-core/seed"
 )
 
 func TestUserRepository_CRUD(t *testing.T) {
@@ -150,7 +151,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	newTenantID := "tenant-sqlite-99"
-	err = core.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
+	err = seed.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
 		ID:       newTenantID,
 		Email:    "tenant99@example.com",
 		FullName: "Tenant Ninety-Nine",
@@ -190,7 +191,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Run second time idempotently with attempted role demotion
-	err = core.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
+	err = seed.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
 		ID:       newTenantID,
 		Email:    "tenant99.modified@example.com",
 		FullName: "Tenant Ninety-Nine Modified",

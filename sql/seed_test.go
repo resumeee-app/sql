@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/resumeee-core/seed"
 )
 
 func TestSeedDefaultData_FirstBoot(t *testing.T) {
@@ -39,7 +40,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(core.DefaultTemplateSets())
+	expectedTemplateCount := len(seed.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount || len(templates) != 5 {
 		t.Fatalf("expected exactly %d built-in templates (count 5), got %d", expectedTemplateCount, len(templates))
 	}
@@ -202,7 +203,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(core.DefaultTemplateSets())
+	expectedTemplateCount := len(seed.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount {
 		t.Errorf("expected exactly %d templates after multiple seeds, got %d", expectedTemplateCount, len(templates))
 	}

@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/resumeee-core/seed"
 )
 
 // Option defines a functional configuration option for Store bundles.
@@ -136,7 +137,7 @@ func SeedBaseline(ctx context.Context, db *gorm.DB, cfg Config) error {
 		branchRepo := NewBranchRepository(tx)
 		templateRepo := NewTemplateRepository(tx)
 		presetRepo := NewPresetRepository(tx)
-		return core.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
+		return seed.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
 	})
 }
 
