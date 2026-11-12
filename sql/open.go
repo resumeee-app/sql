@@ -213,3 +213,17 @@ func Open(ctx context.Context, cfg Config) (domain.Store, error) {
 	}
 	return store, nil
 }
+
+// OpenWithOptions initializes a domain.Store applying functional ConfigOptions on top of DefaultConfig().
+func OpenWithOptions(ctx context.Context, opts ...ConfigOption) (domain.Store, error) {
+	cfg := DefaultConfig()
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt(&cfg); err != nil {
+			return nil, err
+		}
+	}
+	return Open(ctx, cfg)
+}

@@ -50,6 +50,94 @@ type Config struct {
 	DefaultUserID   string        `json:"default_user_id"`
 }
 
+// ConfigOption configures a storage Config instance.
+type ConfigOption func(*Config) error
+
+// DefaultConfig returns a baseline SQLite Config with AutoMigrate enabled and default tenant "default".
+func DefaultConfig() Config {
+	return Config{
+		Driver:        DriverSQLite,
+		DSN:           ":memory:",
+		AutoMigrate:   true,
+		DefaultUserID: "default",
+	}
+}
+
+// WithDriver sets the database engine driver (e.g. DriverSQLite, DriverPostgres, DriverMySQL).
+func WithDriver(driver DriverType) ConfigOption {
+	return func(c *Config) error {
+		if strings.TrimSpace(string(driver)) == "" {
+			return errors.New("sql: driver cannot be empty")
+		}
+		c.Driver = driver
+		return nil
+	}
+}
+
+// WithDSN sets the database connection data source name (DSN) or file path.
+func WithDSN(dsn string) ConfigOption {
+	return func(c *Config) error {
+		if strings.TrimSpace(dsn) == "" {
+			return errors.New("sql: dsn cannot be empty")
+		}
+		c.DSN = strings.TrimSpace(dsn)
+		return nil
+	}
+}
+
+// WithDBPath configures SQLite persistence at the specified file path (or ":memory:").
+func WithDBPath(dbPath string) ConfigOption {
+	return func(c *Config) error {
+		if strings.TrimSpace(dbPath) == "" {
+			return errors.New("sql: dbPath cannot be empty")
+		}
+		c.Driver = DriverSQLite
+		c.DSN = strings.TrimSpace(dbPath)
+		return nil
+	}
+}
+
+// WithSSLMode sets the transport security mode for remote database connections.
+func WithSSLMode(mode SSLMode) ConfigOption {
+	return func(c *Config) error {
+		c.SSLMode = mode
+		return nil
+	}
+}
+
+// WithAutoMigrate enables or disables automatic GORM schema migration during Open.
+func WithAutoMigrate(enabled bool) ConfigOption {
+	return func(c *Config) error {
+		c.AutoMigrate = enabled
+		return nil
+	}
+}
+
+// WithDefaultUserID sets the default tenant user ID used during baseline seeding.
+func WithDefaultUserID(userID string) ConfigOption {
+	return func(c *Config) error {
+		if strings.TrimSpace(userID) == "" {
+			return errors.New("sql: defaultUserID cannot be empty")
+		}
+		c.DefaultUserID = strings.TrimSpace(userID)
+		return nil
+	}
+}
+
+// WithConnectionPool configures connection pool limits and lifetimes on the underlying sql.DB.
+func WithConnectionPool(maxOpen, maxIdle int, maxLifetime, maxIdleTime time.Duration) ConfigOption {
+	return func(c *Config) error {
+		if maxOpen < 0 || maxIdle < 0 {
+			return errors.New("sql: connection pool counts cannot be negative")
+		}
+		c.MaxOpenConns = maxOpen
+		c.MaxIdleConns = maxIdle
+		c.ConnMaxLifetime = maxLifetime
+		c.ConnMaxIdleTime = maxIdleTime
+		return nil
+	}
+}
+
 // Validate validates database driver, DSN, and security mode constraints.
 func (c *Config) Validate() error {
 	driver := c.Driver
