@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 type profileRepository struct {
@@ -18,17 +18,17 @@ type profileRepository struct {
 }
 
 // NewProfileRepository constructs a SQLite-backed ProfileRepository.
-func NewProfileRepository(db *gorm.DB) domain.ProfileRepository {
+func NewProfileRepository(db *gorm.DB) core.ProfileRepository {
 	return &profileRepository{db: db}
 }
 
 // incrementRevisionTx atomically increments the user's main revision within an active transaction.
 func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) error {
-	var prof domain.Profile
+	var prof core.Profile
 	err := tx.Where("user_id = ?", userID).First(&prof).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			prof = domain.Profile{
+			prof = core.Profile{
 				ID:           "profile-" + userID,
 				UserID:       userID,
 				FullName:     userID,
@@ -40,7 +40,7 @@ func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) erro
 		}
 		return err
 	}
-	return tx.Model(&domain.Profile{}).
+	return tx.Model(&core.Profile{}).
 		Where("user_id = ?", userID).
 		Updates(map[string]any{
 			"main_revision": gorm.Expr("main_revision + 1"),
@@ -49,8 +49,8 @@ func (r *profileRepository) incrementRevisionTx(tx *gorm.DB, userID string) erro
 }
 
 // GetProfile retrieves the main profile record for the specified user.
-func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*domain.Profile, error) {
-	var prof domain.Profile
+func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*core.Profile, error) {
+	var prof core.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil {
 		return nil, mapError(err)
 	}
@@ -58,9 +58,9 @@ func (r *profileRepository) GetProfile(ctx context.Context, userID string) (*dom
 }
 
 // UpsertProfile inserts or updates a profile record, incrementing the main revision.
-func (r *profileRepository) UpsertProfile(ctx context.Context, profile *domain.Profile) error {
+func (r *profileRepository) UpsertProfile(ctx context.Context, profile *core.Profile) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existing domain.Profile
+		var existing core.Profile
 		err := tx.Where("user_id = ?", profile.UserID).First(&existing).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -87,7 +87,7 @@ func (r *profileRepository) IncrementMainRevision(ctx context.Context, userID st
 		if err := r.incrementRevisionTx(tx, userID); err != nil {
 			return err
 		}
-		var prof domain.Profile
+		var prof core.Profile
 		if err := tx.Where("user_id = ?", userID).First(&prof).Error; err != nil {
 			return err
 		}
@@ -98,18 +98,18 @@ func (r *profileRepository) IncrementMainRevision(ctx context.Context, userID st
 }
 
 // GetSnapshot retrieves the complete hydrated career graph including skills, experiences, projects, education, certifications, and facts.
-func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*domain.MainProfileSnapshot, error) {
-	var prof domain.Profile
+func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*core.MainProfileSnapshot, error) {
+	var prof core.Profile
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&prof).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
 	}
 
-	var skills []domain.Skill
+	var skills []core.Skill
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&skills).Error; err != nil {
 		return nil, mapError(err)
 	}
 
-	var exps []domain.WorkExperience
+	var exps []core.WorkExperience
 	if err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -119,7 +119,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		return nil, mapError(err)
 	}
 
-	var projs []domain.Project
+	var projs []core.Project
 	if err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -129,7 +129,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		return nil, mapError(err)
 	}
 
-	var edus []domain.Education
+	var edus []core.Education
 	if err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -138,17 +138,17 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 		return nil, mapError(err)
 	}
 
-	var certs []domain.Certification
+	var certs []core.Certification
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&certs).Error; err != nil {
 		return nil, mapError(err)
 	}
 
-	var facts []domain.Fact
+	var facts []core.Fact
 	if err := r.db.WithContext(ctx).Preload("Skills").Where("user_id = ?", userID).Find(&facts).Error; err != nil {
 		return nil, mapError(err)
 	}
 
-	snap := &domain.MainProfileSnapshot{
+	snap := &core.MainProfileSnapshot{
 		Profile:        prof,
 		MainRevision:   prof.MainRevision,
 		Skills:         skills,
@@ -163,7 +163,7 @@ func (r *profileRepository) GetSnapshot(ctx context.Context, userID string) (*do
 }
 
 // ReplaceCareerGraph atomically purges and re-inserts the full career graph from a snapshot.
-func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID string, snapshot *domain.MainProfileSnapshot) error {
+func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID string, snapshot *core.MainProfileSnapshot) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clean up join tables first
 		if err := tx.Exec("DELETE FROM fact_skills WHERE fact_id IN (SELECT id FROM facts WHERE user_id = ?)", userID).Error; err != nil {
@@ -177,28 +177,28 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		}
 
 		// Clean up entity records
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.Fact{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Delete(&core.Fact{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.WorkExperience{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Delete(&core.WorkExperience{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.Project{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Delete(&core.Project{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.Education{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Delete(&core.Education{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&domain.Certification{}).Error; err != nil {
+		if err := tx.Where("user_id = ?", userID).Delete(&core.Certification{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ? AND is_global = ?", userID, false).Delete(&domain.Skill{}).Error; err != nil {
+		if err := tx.Where("user_id = ? AND is_global = ?", userID, false).Delete(&core.Skill{}).Error; err != nil {
 			return err
 		}
 
 		// Re-insert custom skills in batch (exclude global skills)
 		allSkills := snapshot.AllSkills()
-		var customSkills []domain.Skill
+		var customSkills []core.Skill
 		for _, s := range allSkills {
 			if !s.IsGlobal && s.UserID != "system" {
 				s.UserID = userID
@@ -258,7 +258,7 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 		for i := range snapshot.Facts {
 			snapshot.Facts[i].UserID = userID
 			var count int64
-			if err := tx.Model(&domain.Fact{}).Where("id = ?", snapshot.Facts[i].ID).Count(&count).Error; err != nil {
+			if err := tx.Model(&core.Fact{}).Where("id = ?", snapshot.Facts[i].ID).Count(&count).Error; err != nil {
 				return err
 			}
 			if count == 0 {
@@ -266,7 +266,7 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 					return err
 				}
 			} else if len(snapshot.Facts[i].Skills) > 0 {
-				if err := tx.Model(&domain.Fact{ID: snapshot.Facts[i].ID}).Association("Skills").Replace(snapshot.Facts[i].Skills); err != nil {
+				if err := tx.Model(&core.Fact{ID: snapshot.Facts[i].ID}).Association("Skills").Replace(snapshot.Facts[i].Skills); err != nil {
 					return err
 				}
 			}
@@ -283,15 +283,15 @@ func (r *profileRepository) ReplaceCareerGraph(ctx context.Context, userID strin
 
 // Skills CRUD
 // ListSkills returns all skills registered for the specified user plus system global skills.
-func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]domain.Skill, error) {
-	var skills []domain.Skill
+func (r *profileRepository) ListSkills(ctx context.Context, userID string) ([]core.Skill, error) {
+	var skills []core.Skill
 	err := r.db.WithContext(ctx).Where("user_id = ? OR is_global = ?", userID, true).Find(&skills).Error
 	return skills, mapError(err)
 }
 
 // ListGlobalSkills returns all system-seeded global skills.
-func (r *profileRepository) ListGlobalSkills(ctx context.Context) ([]domain.Skill, error) {
-	var skills []domain.Skill
+func (r *profileRepository) ListGlobalSkills(ctx context.Context) ([]core.Skill, error) {
+	var skills []core.Skill
 	err := r.db.WithContext(ctx).Where("is_global = ?", true).Find(&skills).Error
 	return skills, mapError(err)
 }
@@ -305,9 +305,9 @@ func (r *profileRepository) ListGlobalSkills(ctx context.Context) ([]domain.Skil
 //   - id: Canonical UUID or compact short_id of the skill.
 //
 // Returns:
-//   - Pointer to domain.Skill if found, or domain.ErrNotFound if no matching record exists.
-func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*domain.Skill, error) {
-	var skill domain.Skill
+//   - Pointer to core.Skill if found, or core.ErrNotFound if no matching record exists.
+func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*core.Skill, error) {
+	var skill core.Skill
 	err := r.db.WithContext(ctx).Where("(user_id = ? OR is_global = ?) AND (id = ? OR short_id = ?)", userID, true, id, id).First(&skill).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -316,9 +316,9 @@ func (r *profileRepository) GetSkill(ctx context.Context, userID, id string) (*d
 }
 
 // CreateSkill creates a new skill and increments the main revision.
-func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill) error {
+func (r *profileRepository) CreateSkill(ctx context.Context, skill *core.Skill) error {
 	if skill.IsGlobal && skill.UserID != "system" {
-		return fmt.Errorf("%w: only system may create global skills", domain.ErrForbidden)
+		return fmt.Errorf("%w: only system may create global skills", core.ErrForbidden)
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(skill).Error; err != nil {
@@ -333,16 +333,16 @@ func (r *profileRepository) CreateSkill(ctx context.Context, skill *domain.Skill
 
 // UpdateSkill modifies a skill and increments the main revision.
 // System-seeded global skills cannot be modified.
-func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill) error {
-	var existing domain.Skill
+func (r *profileRepository) UpdateSkill(ctx context.Context, skill *core.Skill) error {
+	var existing core.Skill
 	if err := r.db.WithContext(ctx).Where("id = ?", skill.ID).First(&existing).Error; err != nil {
 		return mapError(err)
 	}
 	if existing.IsGlobal {
-		return domain.ErrGlobalSkillImmutable
+		return core.ErrGlobalSkillImmutable
 	}
 	if existing.UserID != skill.UserID {
-		return domain.ErrForbidden
+		return core.ErrForbidden
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -356,15 +356,15 @@ func (r *profileRepository) UpdateSkill(ctx context.Context, skill *domain.Skill
 // DeleteSkill deletes a skill and cleanups join tables before incrementing main revision.
 // System-seeded global skills cannot be deleted.
 func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) error {
-	var existing domain.Skill
+	var existing core.Skill
 	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&existing).Error; err != nil {
 		return mapError(err)
 	}
 	if existing.IsGlobal {
-		return domain.ErrGlobalSkillImmutable
+		return core.ErrGlobalSkillImmutable
 	}
 	if existing.UserID != userID {
-		return domain.ErrForbidden
+		return core.ErrForbidden
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -379,20 +379,20 @@ func (r *profileRepository) DeleteSkill(ctx context.Context, userID, id string) 
 			return err
 		}
 
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Skill{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Skill{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})
 }
 
 // ListExperiences retrieves all work experience records with associations.
-func (r *profileRepository) ListExperiences(ctx context.Context, userID string) ([]domain.WorkExperience, error) {
-	var exps []domain.WorkExperience
+func (r *profileRepository) ListExperiences(ctx context.Context, userID string) ([]core.WorkExperience, error) {
+	var exps []core.WorkExperience
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -411,9 +411,9 @@ func (r *profileRepository) ListExperiences(ctx context.Context, userID string) 
 //   - id: Canonical UUID or compact short_id of the experience.
 //
 // Returns:
-//   - Pointer to domain.WorkExperience with preloaded relations, or domain.ErrNotFound.
-func (r *profileRepository) GetExperience(ctx context.Context, userID, id string) (*domain.WorkExperience, error) {
-	var exp domain.WorkExperience
+//   - Pointer to core.WorkExperience with preloaded relations, or core.ErrNotFound.
+func (r *profileRepository) GetExperience(ctx context.Context, userID, id string) (*core.WorkExperience, error) {
+	var exp core.WorkExperience
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -438,12 +438,12 @@ func isUUID(s string) bool {
 // If an existing skill matches by ID, ShortID, or case-insensitive Name for the specified user, that skill is used.
 // If no existing skill matches and a valid skill name is provided, a new canonical Skill record is created
 // for the user and persisted in the database.
-func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkills []domain.Skill) ([]domain.Skill, error) {
+func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkills []core.Skill) ([]core.Skill, error) {
 	if len(rawSkills) == 0 {
-		return []domain.Skill{}, nil
+		return []core.Skill{}, nil
 	}
 
-	resolved := make([]domain.Skill, 0, len(rawSkills))
+	resolved := make([]core.Skill, 0, len(rawSkills))
 	seen := make(map[string]struct{}, len(rawSkills))
 
 	for _, raw := range rawSkills {
@@ -457,7 +457,7 @@ func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkill
 			nameCandidate = rawID
 		}
 
-		var found domain.Skill
+		var found core.Skill
 
 		// 1. Match existing skill by ID (user skill OR global skill)
 		if rawID != "" {
@@ -503,9 +503,9 @@ func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkill
 			newCategory = "General Skills"
 		}
 
-		newSkill := domain.Skill{
-			ID:              domain.GenerateID("skill"),
-			ShortID:         domain.GenerateShortID("skill"),
+		newSkill := core.Skill{
+			ID:              core.GenerateID("skill"),
+			ShortID:         core.GenerateShortID("skill"),
 			UserID:          userID,
 			Name:            nameCandidate,
 			Category:        newCategory,
@@ -531,7 +531,7 @@ func (r *profileRepository) resolveSkillsTx(tx *gorm.DB, userID string, rawSkill
 }
 
 // CreateExperience creates a work experience entry and increments main revision.
-func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.WorkExperience) error {
+func (r *profileRepository) CreateExperience(ctx context.Context, exp *core.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, exp.UserID, exp.Skills)
 		if err != nil {
@@ -546,7 +546,7 @@ func (r *profileRepository) CreateExperience(ctx context.Context, exp *domain.Wo
 }
 
 // UpdateExperience saves modified experience fields and replaces skill associations.
-func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.WorkExperience) error {
+func (r *profileRepository) UpdateExperience(ctx context.Context, exp *core.WorkExperience) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, exp.UserID, exp.Skills)
 		if err != nil {
@@ -567,37 +567,37 @@ func (r *profileRepository) UpdateExperience(ctx context.Context, exp *domain.Wo
 func (r *profileRepository) DeleteExperience(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Clear many2many skills join table
-		if err := tx.Model(&domain.WorkExperience{ID: id}).Association("Skills").Clear(); err != nil {
+		if err := tx.Model(&core.WorkExperience{ID: id}).Association("Skills").Clear(); err != nil {
 			return err
 		}
 		// Clear fact associations and delete facts
 		var factIDs []string
-		if err := tx.Model(&domain.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeWorkExperience).Pluck("id", &factIDs).Error; err != nil {
+		if err := tx.Model(&core.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeWorkExperience).Pluck("id", &factIDs).Error; err != nil {
 			return err
 		}
 		for _, fID := range factIDs {
-			if err := tx.Model(&domain.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
+			if err := tx.Model(&core.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeWorkExperience).Delete(&domain.Fact{}).Error; err != nil {
+		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeWorkExperience).Delete(&core.Fact{}).Error; err != nil {
 			return err
 		}
 
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.WorkExperience{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.WorkExperience{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})
 }
 
 // ListProjects returns all projects belonging to the specified user.
-func (r *profileRepository) ListProjects(ctx context.Context, userID string) ([]domain.Project, error) {
-	var projs []domain.Project
+func (r *profileRepository) ListProjects(ctx context.Context, userID string) ([]core.Project, error) {
+	var projs []core.Project
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -616,9 +616,9 @@ func (r *profileRepository) ListProjects(ctx context.Context, userID string) ([]
 //   - id: Canonical UUID or compact short_id of the project.
 //
 // Returns:
-//   - Pointer to domain.Project with preloaded relations, or domain.ErrNotFound.
-func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (*domain.Project, error) {
-	var proj domain.Project
+//   - Pointer to core.Project with preloaded relations, or core.ErrNotFound.
+func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (*core.Project, error) {
+	var proj core.Project
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -632,7 +632,7 @@ func (r *profileRepository) GetProject(ctx context.Context, userID, id string) (
 }
 
 // CreateProject inserts a new project record and bumps main revision.
-func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Project) error {
+func (r *profileRepository) CreateProject(ctx context.Context, proj *core.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, proj.UserID, proj.Skills)
 		if err != nil {
@@ -647,7 +647,7 @@ func (r *profileRepository) CreateProject(ctx context.Context, proj *domain.Proj
 }
 
 // UpdateProject saves modified project fields and updates skill associations.
-func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Project) error {
+func (r *profileRepository) UpdateProject(ctx context.Context, proj *core.Project) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, proj.UserID, proj.Skills)
 		if err != nil {
@@ -667,36 +667,36 @@ func (r *profileRepository) UpdateProject(ctx context.Context, proj *domain.Proj
 // DeleteProject deletes a project, unlinks associated skills, and purges child facts.
 func (r *profileRepository) DeleteProject(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&domain.Project{ID: id}).Association("Skills").Clear(); err != nil {
+		if err := tx.Model(&core.Project{ID: id}).Association("Skills").Clear(); err != nil {
 			return err
 		}
 		var factIDs []string
-		if err := tx.Model(&domain.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeProject).Pluck("id", &factIDs).Error; err != nil {
+		if err := tx.Model(&core.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeProject).Pluck("id", &factIDs).Error; err != nil {
 			return err
 		}
 		for _, fID := range factIDs {
-			if err := tx.Model(&domain.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
+			if err := tx.Model(&core.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeProject).Delete(&domain.Fact{}).Error; err != nil {
+		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeProject).Delete(&core.Fact{}).Error; err != nil {
 			return err
 		}
 
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Project{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Project{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})
 }
 
 // ListEducation retrieves all education entries for the specified user.
-func (r *profileRepository) ListEducation(ctx context.Context, userID string) ([]domain.Education, error) {
-	var edus []domain.Education
+func (r *profileRepository) ListEducation(ctx context.Context, userID string) ([]core.Education, error) {
+	var edus []core.Education
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -714,9 +714,9 @@ func (r *profileRepository) ListEducation(ctx context.Context, userID string) ([
 //   - id: Canonical UUID or compact short_id of the education credential.
 //
 // Returns:
-//   - Pointer to domain.Education with preloaded facts, or domain.ErrNotFound.
-func (r *profileRepository) GetEducation(ctx context.Context, userID, id string) (*domain.Education, error) {
-	var edu domain.Education
+//   - Pointer to core.Education with preloaded facts, or core.ErrNotFound.
+func (r *profileRepository) GetEducation(ctx context.Context, userID, id string) (*core.Education, error) {
+	var edu core.Education
 	err := r.db.WithContext(ctx).
 		Preload("Facts", "user_id = ?", userID).
 		Preload("Facts.Skills").
@@ -729,7 +729,7 @@ func (r *profileRepository) GetEducation(ctx context.Context, userID, id string)
 }
 
 // CreateEducation creates an education entry and increments main revision.
-func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Education) error {
+func (r *profileRepository) CreateEducation(ctx context.Context, edu *core.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(edu).Error; err != nil {
 			return err
@@ -739,7 +739,7 @@ func (r *profileRepository) CreateEducation(ctx context.Context, edu *domain.Edu
 }
 
 // UpdateEducation saves updated education fields and increments main revision.
-func (r *profileRepository) UpdateEducation(ctx context.Context, edu *domain.Education) error {
+func (r *profileRepository) UpdateEducation(ctx context.Context, edu *core.Education) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{FullSaveAssociations: true}).Save(edu).Error; err != nil {
 			return err
@@ -752,32 +752,32 @@ func (r *profileRepository) UpdateEducation(ctx context.Context, edu *domain.Edu
 func (r *profileRepository) DeleteEducation(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var factIDs []string
-		if err := tx.Model(&domain.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeEducation).Pluck("id", &factIDs).Error; err != nil {
+		if err := tx.Model(&core.Fact{}).Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeEducation).Pluck("id", &factIDs).Error; err != nil {
 			return err
 		}
 		for _, fID := range factIDs {
-			if err := tx.Model(&domain.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
+			if err := tx.Model(&core.Fact{ID: fID}).Association("Skills").Clear(); err != nil {
 				return err
 			}
 		}
-		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, domain.OwnerTypeEducation).Delete(&domain.Fact{}).Error; err != nil {
+		if err := tx.Where("user_id = ? AND owner_id = ? AND owner_type = ?", userID, id, core.OwnerTypeEducation).Delete(&core.Fact{}).Error; err != nil {
 			return err
 		}
 
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Education{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Education{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})
 }
 
 // ListCertifications returns all certifications registered under the user.
-func (r *profileRepository) ListCertifications(ctx context.Context, userID string) ([]domain.Certification, error) {
-	var certs []domain.Certification
+func (r *profileRepository) ListCertifications(ctx context.Context, userID string) ([]core.Certification, error) {
+	var certs []core.Certification
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Find(&certs).Error
 	return certs, mapError(err)
 }
@@ -791,9 +791,9 @@ func (r *profileRepository) ListCertifications(ctx context.Context, userID strin
 //   - id: Canonical UUID or compact short_id of the certification.
 //
 // Returns:
-//   - Pointer to domain.Certification if found, or domain.ErrNotFound.
-func (r *profileRepository) GetCertification(ctx context.Context, userID, id string) (*domain.Certification, error) {
-	var cert domain.Certification
+//   - Pointer to core.Certification if found, or core.ErrNotFound.
+func (r *profileRepository) GetCertification(ctx context.Context, userID, id string) (*core.Certification, error) {
+	var cert core.Certification
 	err := r.db.WithContext(ctx).Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).First(&cert).Error
 	if err != nil {
 		return nil, mapError(err)
@@ -802,7 +802,7 @@ func (r *profileRepository) GetCertification(ctx context.Context, userID, id str
 }
 
 // CreateCertification inserts a certification entry and increments main revision.
-func (r *profileRepository) CreateCertification(ctx context.Context, cert *domain.Certification) error {
+func (r *profileRepository) CreateCertification(ctx context.Context, cert *core.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(cert).Error; err != nil {
 			return err
@@ -812,7 +812,7 @@ func (r *profileRepository) CreateCertification(ctx context.Context, cert *domai
 }
 
 // UpdateCertification modifies certification attributes and bumps main revision.
-func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domain.Certification) error {
+func (r *profileRepository) UpdateCertification(ctx context.Context, cert *core.Certification) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(cert).Error; err != nil {
 			return err
@@ -824,12 +824,12 @@ func (r *profileRepository) UpdateCertification(ctx context.Context, cert *domai
 // DeleteCertification removes a certification entry and increments main revision.
 func (r *profileRepository) DeleteCertification(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Certification{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Certification{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})
@@ -847,20 +847,20 @@ func (r *profileRepository) DeleteCertification(ctx context.Context, userID, id 
 //   - ownerID: Canonical UUID or short_id of the parent entity.
 //
 // Returns:
-//   - Slice of domain.Fact records with preloaded skills, or an error.
-func (r *profileRepository) ListFactsByOwner(ctx context.Context, userID, ownerType, ownerID string) ([]domain.Fact, error) {
-	var facts []domain.Fact
+//   - Slice of core.Fact records with preloaded skills, or an error.
+func (r *profileRepository) ListFactsByOwner(ctx context.Context, userID, ownerType, ownerID string) ([]core.Fact, error) {
+	var facts []core.Fact
 	targetOwnerID := ownerID
 	switch ownerType {
-	case string(domain.OwnerTypeWorkExperience):
+	case string(core.OwnerTypeWorkExperience):
 		if exp, err := r.GetExperience(ctx, userID, ownerID); err == nil && exp != nil {
 			targetOwnerID = exp.ID
 		}
-	case string(domain.OwnerTypeProject):
+	case string(core.OwnerTypeProject):
 		if proj, err := r.GetProject(ctx, userID, ownerID); err == nil && proj != nil {
 			targetOwnerID = proj.ID
 		}
-	case string(domain.OwnerTypeEducation):
+	case string(core.OwnerTypeEducation):
 		if edu, err := r.GetEducation(ctx, userID, ownerID); err == nil && edu != nil {
 			targetOwnerID = edu.ID
 		}
@@ -881,9 +881,9 @@ func (r *profileRepository) ListFactsByOwner(ctx context.Context, userID, ownerT
 //   - id: Canonical UUID or compact short_id of the fact.
 //
 // Returns:
-//   - Pointer to domain.Fact with preloaded skills, or domain.ErrNotFound.
-func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*domain.Fact, error) {
-	var fact domain.Fact
+//   - Pointer to core.Fact with preloaded skills, or core.ErrNotFound.
+func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*core.Fact, error) {
+	var fact core.Fact
 	err := r.db.WithContext(ctx).
 		Preload("Skills").
 		Where("user_id = ? AND (id = ? OR short_id = ?)", userID, id, id).
@@ -895,7 +895,7 @@ func (r *profileRepository) GetFact(ctx context.Context, userID, id string) (*do
 }
 
 // CreateFact inserts a fact bullet point and increments main revision.
-func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) error {
+func (r *profileRepository) CreateFact(ctx context.Context, fact *core.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
 		if err != nil {
@@ -910,7 +910,7 @@ func (r *profileRepository) CreateFact(ctx context.Context, fact *domain.Fact) e
 }
 
 // UpdateFact updates fact statements, impact, or skill associations and increments main revision.
-func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) error {
+func (r *profileRepository) UpdateFact(ctx context.Context, fact *core.Fact) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		resolved, err := r.resolveSkillsTx(tx, fact.UserID, fact.Skills)
 		if err != nil {
@@ -930,15 +930,15 @@ func (r *profileRepository) UpdateFact(ctx context.Context, fact *domain.Fact) e
 // DeleteFact deletes a fact bullet, unlinks associated skills, and increments main revision.
 func (r *profileRepository) DeleteFact(ctx context.Context, userID, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&domain.Fact{ID: id}).Association("Skills").Clear(); err != nil {
+		if err := tx.Model(&core.Fact{ID: id}).Association("Skills").Clear(); err != nil {
 			return err
 		}
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&domain.Fact{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Fact{})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
-			return domain.ErrNotFound
+			return core.ErrNotFound
 		}
 		return r.incrementRevisionTx(tx, userID)
 	})

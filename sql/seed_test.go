@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 func TestSeedDefaultData_FirstBoot(t *testing.T) {
@@ -39,16 +39,16 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(domain.DefaultTemplateSets())
+	expectedTemplateCount := len(core.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount || len(templates) != 5 {
 		t.Fatalf("expected exactly %d built-in templates (count 5), got %d", expectedTemplateCount, len(templates))
 	}
 
-	tmplMap := make(map[string]domain.TemplateSet)
+	tmplMap := make(map[string]core.TemplateSet)
 	for _, tmpl := range templates {
 		tmplMap[tmpl.Name] = tmpl
 		// Verify template syntax validity in domain
-		if err := (domain.DefaultTemplateValidator{}).Validate(&tmpl); err != nil {
+		if err := (core.DefaultTemplateValidator{}).Validate(&tmpl); err != nil {
 			t.Errorf("template %s has invalid syntax: %v", tmpl.Name, err)
 		}
 	}
@@ -57,11 +57,11 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		name string
 		id   string
 	}{
-		{"Standard Clean", domain.TemplateStandardCleanID},
-		{"Detailed Immigration / CV", domain.TemplateDetailedImmigrationCVID},
-		{"ATS Minimal Plain-Text & Clean HTML", domain.TemplateATSMinimalTxtID},
-		{"ATS Modern Tech", domain.TemplateATSHybridTechID},
-		{"ATS Executive Clean", domain.TemplateATSExecutiveCleanID},
+		{"Standard Clean", core.TemplateStandardCleanID},
+		{"Detailed Immigration / CV", core.TemplateDetailedImmigrationCVID},
+		{"ATS Minimal Plain-Text & Clean HTML", core.TemplateATSMinimalTxtID},
+		{"ATS Modern Tech", core.TemplateATSHybridTechID},
+		{"ATS Executive Clean", core.TemplateATSExecutiveCleanID},
 	}
 
 	for _, exp := range expectedTemplates {
@@ -87,7 +87,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		t.Errorf("expected at least 2 built-in presets, got %d", len(presets))
 	}
 
-	presetMap := make(map[string]domain.Preset)
+	presetMap := make(map[string]core.Preset)
 	for _, p := range presets {
 		presetMap[p.Name] = p
 	}
@@ -119,14 +119,14 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if !defaultBranch.IsDefault {
 		t.Errorf("expected first branch to have IsDefault=true, got %+v", defaultBranch)
 	}
-	if defaultBranch.ID != domain.DefaultBranchID("default") {
-		t.Errorf("expected default branch ID %s, got %s", domain.DefaultBranchID("default"), defaultBranch.ID)
+	if defaultBranch.ID != core.DefaultBranchID("default") {
+		t.Errorf("expected default branch ID %s, got %s", core.DefaultBranchID("default"), defaultBranch.ID)
 	}
-	if defaultBranch.Name != domain.DefaultBranchName {
-		t.Errorf("expected default branch name %s, got %s", domain.DefaultBranchName, defaultBranch.Name)
+	if defaultBranch.Name != core.DefaultBranchName {
+		t.Errorf("expected default branch name %s, got %s", core.DefaultBranchName, defaultBranch.Name)
 	}
-	if defaultBranch.TemplateSetID != domain.TemplateStandardCleanID {
-		t.Errorf("expected default branch template %s, got %s", domain.TemplateStandardCleanID, defaultBranch.TemplateSetID)
+	if defaultBranch.TemplateSetID != core.TemplateStandardCleanID {
+		t.Errorf("expected default branch template %s, got %s", core.TemplateStandardCleanID, defaultBranch.TemplateSetID)
 	}
 	if defaultBranch.ActiveVersionID == nil || *defaultBranch.ActiveVersionID == "" {
 		t.Fatalf("expected default branch to have an active version")
@@ -136,11 +136,11 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get default branch active version: %v", err)
 	}
-	if ver.Status != domain.VersionStatusCompleted {
+	if ver.Status != core.VersionStatusCompleted {
 		t.Errorf("expected completed status, got %s", ver.Status)
 	}
-	if ver.SourceType != domain.SourceTypeMainProfile {
-		t.Errorf("expected SourceType %s, got %s", domain.SourceTypeMainProfile, ver.SourceType)
+	if ver.SourceType != core.SourceTypeMainProfile {
+		t.Errorf("expected SourceType %s, got %s", core.SourceTypeMainProfile, ver.SourceType)
 	}
 	if ver.ProviderUsed != "none" || ver.ModelUsed != "none" {
 		t.Errorf("expected provider/model to be 'none', got provider=%s, model=%s", ver.ProviderUsed, ver.ModelUsed)
@@ -202,7 +202,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list templates: %v", err)
 	}
-	expectedTemplateCount := len(domain.DefaultTemplateSets())
+	expectedTemplateCount := len(core.DefaultTemplateSets())
 	if len(templates) != expectedTemplateCount {
 		t.Errorf("expected exactly %d templates after multiple seeds, got %d", expectedTemplateCount, len(templates))
 	}
@@ -254,11 +254,11 @@ func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 	}
 
 	// 2. Creating a regular branch and deleting it should succeed
-	customBranch := &domain.Branch{
+	customBranch := &core.Branch{
 		ID:            "branch-custom-1",
 		UserID:        "default",
 		Name:          "Custom Branch",
-		TemplateSetID: domain.TemplateStandardCleanID,
+		TemplateSetID: core.TemplateStandardCleanID,
 		IsDefault:     false,
 	}
 	if err := branchRepo.CreateBranch(ctx, customBranch); err != nil {

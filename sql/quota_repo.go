@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 type quotaRepository struct {
@@ -18,21 +18,21 @@ type quotaRepository struct {
 }
 
 // NewQuotaRepository constructs a SQLite-backed QuotaRepository.
-func NewQuotaRepository(db *gorm.DB) domain.QuotaRepository {
+func NewQuotaRepository(db *gorm.DB) core.QuotaRepository {
 	return &quotaRepository{db: db}
 }
 
 // GetQuota retrieves the quota for a tenant, initializing defaults and performing lazy window resets.
-func (r *quotaRepository) GetQuota(ctx context.Context, userID string) (*domain.TenantQuota, error) {
+func (r *quotaRepository) GetQuota(ctx context.Context, userID string) (*core.TenantQuota, error) {
 	if userID == "" {
-		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+		return nil, fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
 	}
 
-	var quota domain.TenantQuota
+	var quota core.TenantQuota
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&quota).Error
 	now := time.Now().UTC()
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		quota = domain.TenantQuota{
+		quota = core.TenantQuota{
 			UserID:             userID,
 			DailyRequestsUsed:  0,
 			DailyRequestLimit:  50,
@@ -65,20 +65,20 @@ func (r *quotaRepository) GetQuota(ctx context.Context, userID string) (*domain.
 func (r *quotaRepository) ReserveQuota(
 	ctx context.Context,
 	userID string,
-	op domain.LLMOperationType,
+	op core.LLMOperationType,
 	estimatedTokens int,
 	dailyLimit int,
 	monthlyLimit int,
-) (*domain.LLMUsageRecord, error) {
+) (*core.LLMUsageRecord, error) {
 	if userID == "" {
-		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+		return nil, fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
 	}
 
-	var record domain.LLMUsageRecord
+	var record core.LLMUsageRecord
 	now := time.Now().UTC()
 
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var quota domain.TenantQuota
+		var quota core.TenantQuota
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&quota).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			dLimit := 50
@@ -89,7 +89,7 @@ func (r *quotaRepository) ReserveQuota(
 			if monthlyLimit > 0 {
 				mLimit = monthlyLimit
 			}
-			quota = domain.TenantQuota{
+			quota = core.TenantQuota{
 				UserID:             userID,
 				DailyRequestsUsed:  0,
 				DailyRequestLimit:  dLimit,
@@ -119,10 +119,10 @@ func (r *quotaRepository) ReserveQuota(
 
 		// Check capacity
 		if quota.DailyRequestsUsed+1 > quota.DailyRequestLimit {
-			return domain.ErrQuotaExceeded
+			return core.ErrQuotaExceeded
 		}
 		if quota.MonthlyTokensUsed+estimatedTokens > quota.MonthlyTokenLimit {
-			return domain.ErrQuotaExceeded
+			return core.ErrQuotaExceeded
 		}
 
 		quota.DailyRequestsUsed++
@@ -133,12 +133,12 @@ func (r *quotaRepository) ReserveQuota(
 			return saveErr
 		}
 
-		record = domain.LLMUsageRecord{
+		record = core.LLMUsageRecord{
 			ID:              "res-" + uuid.New().String(),
 			UserID:          userID,
 			Operation:       op,
 			EstimatedTokens: estimatedTokens,
-			Status:          domain.ReservationStatusPending,
+			Status:          core.ReservationStatusPending,
 			CreatedAt:       now,
 		}
 
@@ -146,8 +146,8 @@ func (r *quotaRepository) ReserveQuota(
 	})
 
 	if err != nil {
-		if errors.Is(err, domain.ErrQuotaExceeded) {
-			return nil, domain.ErrQuotaExceeded
+		if errors.Is(err, core.ErrQuotaExceeded) {
+			return nil, core.ErrQuotaExceeded
 		}
 		return nil, mapError(err)
 	}
@@ -156,22 +156,22 @@ func (r *quotaRepository) ReserveQuota(
 }
 
 // CommitUsage reconciles token usage and marks the reservation committed.
-func (r *quotaRepository) CommitUsage(ctx context.Context, reservationID string, usage domain.TokenUsage) error {
+func (r *quotaRepository) CommitUsage(ctx context.Context, reservationID string, usage core.TokenUsage) error {
 	if reservationID == "" {
-		return fmt.Errorf("%w: reservation id cannot be empty", domain.ErrValidation)
+		return fmt.Errorf("%w: reservation id cannot be empty", core.ErrValidation)
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var record domain.LLMUsageRecord
+		var record core.LLMUsageRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&record).Error; err != nil {
 			return mapError(err)
 		}
 
-		if record.Status != domain.ReservationStatusPending {
+		if record.Status != core.ReservationStatusPending {
 			return nil
 		}
 
-		var quota domain.TenantQuota
+		var quota core.TenantQuota
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", record.UserID).First(&quota).Error; err == nil {
 			delta := usage.TotalTokens - record.EstimatedTokens
 			quota.AdjustMonthlyTokens(delta)
@@ -182,7 +182,7 @@ func (r *quotaRepository) CommitUsage(ctx context.Context, reservationID string,
 		}
 
 		now := time.Now().UTC()
-		record.Status = domain.ReservationStatusCommitted
+		record.Status = core.ReservationStatusCommitted
 		record.PromptTokens = usage.PromptTokens
 		record.CompletionTokens = usage.CompletionTokens
 		record.TotalTokens = usage.TotalTokens
@@ -195,20 +195,20 @@ func (r *quotaRepository) CommitUsage(ctx context.Context, reservationID string,
 // ReleaseQuota refunds the reservation and marks it released.
 func (r *quotaRepository) ReleaseQuota(ctx context.Context, reservationID string, errMsg string) error {
 	if reservationID == "" {
-		return fmt.Errorf("%w: reservation id cannot be empty", domain.ErrValidation)
+		return fmt.Errorf("%w: reservation id cannot be empty", core.ErrValidation)
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var record domain.LLMUsageRecord
+		var record core.LLMUsageRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&record).Error; err != nil {
 			return mapError(err)
 		}
 
-		if record.Status != domain.ReservationStatusPending {
+		if record.Status != core.ReservationStatusPending {
 			return nil
 		}
 
-		var quota domain.TenantQuota
+		var quota core.TenantQuota
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", record.UserID).First(&quota).Error; err == nil {
 			quota.ReleaseReservation(record.EstimatedTokens)
 			quota.UpdatedAt = time.Now().UTC()
@@ -217,7 +217,7 @@ func (r *quotaRepository) ReleaseQuota(ctx context.Context, reservationID string
 			}
 		}
 
-		record.Status = domain.ReservationStatusReleased
+		record.Status = core.ReservationStatusReleased
 		record.ErrorMessage = errMsg
 
 		return tx.Save(&record).Error
@@ -225,15 +225,15 @@ func (r *quotaRepository) ReleaseQuota(ctx context.Context, reservationID string
 }
 
 // ListUsageRecords returns recent LLM usage records for a tenant.
-func (r *quotaRepository) ListUsageRecords(ctx context.Context, userID string, limit int) ([]domain.LLMUsageRecord, error) {
+func (r *quotaRepository) ListUsageRecords(ctx context.Context, userID string, limit int) ([]core.LLMUsageRecord, error) {
 	if userID == "" {
-		return nil, fmt.Errorf("%w: user id cannot be empty", domain.ErrValidation)
+		return nil, fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
 	}
 	if limit <= 0 {
 		limit = 50
 	}
 
-	var records []domain.LLMUsageRecord
+	var records []core.LLMUsageRecord
 	err := r.db.WithContext(ctx).
 		Where("user_id = ?", userID).
 		Order("created_at DESC").

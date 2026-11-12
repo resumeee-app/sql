@@ -6,11 +6,11 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 // RegisterNormalizationCallbacks registers GORM lifecycle callbacks that automatically invoke
-// domain.Normalizable prior to record creation and updates, restoring domain entity purity.
+// core.Normalizable prior to record creation and updates, restoring domain entity purity.
 func RegisterNormalizationCallbacks(db *gorm.DB) error {
 	if db == nil {
 		return errors.New("database instance cannot be nil")
@@ -41,7 +41,7 @@ func normalizeValue(db *gorm.DB, v any) {
 	}
 
 	// Direct interface check
-	if n, ok := v.(domain.Normalizable); ok {
+	if n, ok := v.(core.Normalizable); ok {
 		if err := n.Normalize(); err != nil {
 			_ = db.AddError(err)
 		}
@@ -61,12 +61,12 @@ func normalizeValue(db *gorm.DB, v any) {
 		for i := 0; i < val.Len(); i++ {
 			elem := val.Index(i)
 			if elem.CanAddr() {
-				if n, ok := elem.Addr().Interface().(domain.Normalizable); ok {
+				if n, ok := elem.Addr().Interface().(core.Normalizable); ok {
 					if err := n.Normalize(); err != nil {
 						_ = db.AddError(err)
 					}
 				}
-			} else if n, ok := elem.Interface().(domain.Normalizable); ok {
+			} else if n, ok := elem.Interface().(core.Normalizable); ok {
 				if err := n.Normalize(); err != nil {
 					_ = db.AddError(err)
 				}

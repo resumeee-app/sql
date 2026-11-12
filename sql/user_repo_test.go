@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 func TestUserRepository_CRUD(t *testing.T) {
@@ -18,27 +18,27 @@ func TestUserRepository_CRUD(t *testing.T) {
 	repo := NewUserRepository(db)
 
 	t.Run("Validation failure on nil user or empty ID", func(t *testing.T) {
-		if err := repo.UpsertUser(ctx, nil); !errors.Is(err, domain.ErrValidation) {
+		if err := repo.UpsertUser(ctx, nil); !errors.Is(err, core.ErrValidation) {
 			t.Errorf("expected ErrValidation for nil user, got %v", err)
 		}
-		if err := repo.UpsertUser(ctx, &domain.User{ID: ""}); !errors.Is(err, domain.ErrValidation) {
+		if err := repo.UpsertUser(ctx, &core.User{ID: ""}); !errors.Is(err, core.ErrValidation) {
 			t.Errorf("expected ErrValidation for empty ID, got %v", err)
 		}
 	})
 
 	t.Run("GetUser not found returns ErrNotFound", func(t *testing.T) {
 		_, err := repo.GetUser(ctx, "non-existent-user-id")
-		if !errors.Is(err, domain.ErrNotFound) {
+		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound, got %v", err)
 		}
 	})
 
 	t.Run("Create user and retrieve", func(t *testing.T) {
-		u := &domain.User{
+		u := &core.User{
 			ID:       "user-alpha",
 			Email:    "alpha@example.com",
 			FullName: "Alpha User",
-			Role:     domain.UserRoleUser,
+			Role:     core.UserRoleUser,
 			Tier:     "free",
 			IsActive: true,
 		}
@@ -56,7 +56,7 @@ func TestUserRepository_CRUD(t *testing.T) {
 		if retrieved.FullName != "Alpha User" {
 			t.Errorf("expected Alpha User, got %q", retrieved.FullName)
 		}
-		if retrieved.Role != domain.UserRoleUser {
+		if retrieved.Role != core.UserRoleUser {
 			t.Errorf("expected user role, got %q", retrieved.Role)
 		}
 		if !retrieved.IsActive {
@@ -68,11 +68,11 @@ func TestUserRepository_CRUD(t *testing.T) {
 	})
 
 	t.Run("Update user details on subsequent upsert", func(t *testing.T) {
-		u := &domain.User{
+		u := &core.User{
 			ID:       "user-alpha",
 			Email:    "alpha.updated@example.com",
 			FullName: "Alpha Updated",
-			Role:     domain.UserRoleUser,
+			Role:     core.UserRoleUser,
 			Tier:     "pro",
 			IsActive: false,
 		}
@@ -99,11 +99,11 @@ func TestUserRepository_CRUD(t *testing.T) {
 	})
 
 	t.Run("Preserve existing admin role on conflict", func(t *testing.T) {
-		adminUser := &domain.User{
+		adminUser := &core.User{
 			ID:       "admin-user-1",
 			Email:    "admin@resumeee.io",
 			FullName: "Root Administrator",
-			Role:     domain.UserRoleAdmin,
+			Role:     core.UserRoleAdmin,
 			Tier:     "enterprise",
 			IsActive: true,
 		}
@@ -112,11 +112,11 @@ func TestUserRepository_CRUD(t *testing.T) {
 		}
 
 		// Subsequent upsert attempting to downgrade to standard user
-		demotionAttempt := &domain.User{
+		demotionAttempt := &core.User{
 			ID:       "admin-user-1",
 			Email:    "admin.newemail@resumeee.io",
 			FullName: "Root Administrator Updated",
-			Role:     domain.UserRoleUser,
+			Role:     core.UserRoleUser,
 			Tier:     "free",
 			IsActive: true,
 		}
@@ -128,8 +128,8 @@ func TestUserRepository_CRUD(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to retrieve admin user: %v", err)
 		}
-		if retrieved.Role != domain.UserRoleAdmin {
-			t.Errorf("expected role to remain %q, got %q", domain.UserRoleAdmin, retrieved.Role)
+		if retrieved.Role != core.UserRoleAdmin {
+			t.Errorf("expected role to remain %q, got %q", core.UserRoleAdmin, retrieved.Role)
 		}
 		if retrieved.Email != "admin.newemail@resumeee.io" {
 			t.Errorf("expected email to be updated to admin.newemail@resumeee.io, got %q", retrieved.Email)
@@ -150,11 +150,11 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	newTenantID := "tenant-sqlite-99"
-	err = domain.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = core.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
 		ID:       newTenantID,
 		Email:    "tenant99@example.com",
 		FullName: "Tenant Ninety-Nine",
-		Role:     domain.UserRoleUser,
+		Role:     core.UserRoleUser,
 		IsActive: true,
 	})
 	if err != nil {
@@ -180,7 +180,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Verify Default Branch was created
-	defaultBranchID := domain.DefaultBranchID(newTenantID)
+	defaultBranchID := core.DefaultBranchID(newTenantID)
 	branch, err := store.Branch().GetBranch(ctx, newTenantID, defaultBranchID)
 	if err != nil {
 		t.Fatalf("failed to get provisioned branch: %v", err)
@@ -190,11 +190,11 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Run second time idempotently with attempted role demotion
-	err = domain.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = core.EnsureTenantProvisioned(ctx, store, newTenantID, &core.User{
 		ID:       newTenantID,
 		Email:    "tenant99.modified@example.com",
 		FullName: "Tenant Ninety-Nine Modified",
-		Role:     domain.UserRoleUser,
+		Role:     core.UserRoleUser,
 		IsActive: true,
 	})
 	if err != nil {

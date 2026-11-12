@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 // New initializes a GORM SQLite database connection using the pure-Go SQLite driver,
@@ -70,21 +70,21 @@ func New(dsn string) (*gorm.DB, error) {
 // AutoMigrate migrates all entity tables and join tables defined by domain models.
 func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 	if err := db.WithContext(ctx).AutoMigrate(
-		&domain.Profile{},
-		&domain.Skill{},
-		&domain.WorkExperience{},
-		&domain.Project{},
-		&domain.Education{},
-		&domain.Certification{},
-		&domain.Fact{},
-		&domain.Preset{},
-		&domain.TemplateSet{},
-		&domain.Branch{},
-		&domain.BranchVersion{},
-		&domain.PDFParseJob{},
-		&domain.User{},
-		&domain.TenantQuota{},
-		&domain.LLMUsageRecord{},
+		&core.Profile{},
+		&core.Skill{},
+		&core.WorkExperience{},
+		&core.Project{},
+		&core.Education{},
+		&core.Certification{},
+		&core.Fact{},
+		&core.Preset{},
+		&core.TemplateSet{},
+		&core.Branch{},
+		&core.BranchVersion{},
+		&core.PDFParseJob{},
+		&core.User{},
+		&core.TenantQuota{},
+		&core.LLMUsageRecord{},
 	); err != nil {
 		return err
 	}
@@ -113,10 +113,10 @@ func mapError(err error) error {
 		return nil
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("%w: %v", domain.ErrNotFound, err)
+		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
 	}
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return fmt.Errorf("%w: %v", domain.ErrConflict, err)
+		return fmt.Errorf("%w: %v", core.ErrConflict, err)
 	}
 	return err
 }
@@ -132,7 +132,7 @@ func mapError(err error) error {
 // Returns:
 //   - repository.Store: Initialized SQLite store bundle.
 //   - error: Non-nil if directory creation, database initialization, or seeding fails.
-func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (domain.Store, error) {
+func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (core.Store, error) {
 	if dbPath != ":memory:" && !strings.Contains(dbPath, "mode=memory") {
 		dir := filepath.Dir(dbPath)
 		if dir != "." && dir != "" {
@@ -164,7 +164,7 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (dom
 		return nil
 	}
 
-	return &domain.StoreBundle{
+	return &core.StoreBundle{
 		ProfileRepo:  NewProfileRepository(db),
 		PresetRepo:   NewPresetRepository(db),
 		TemplateRepo: NewTemplateRepository(db),

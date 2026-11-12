@@ -2,11 +2,11 @@
 // schema migrations, connection pooling, and baseline seed utilities.
 //
 // Implemented repository interfaces include:
-//   - domain.ProfileRepository: Main profiles, career graphs, and revision increments
-//   - domain.BranchRepository: Targeted resume branches and immutable version snapshots
-//   - domain.TemplateRepository: Built-in ATS and custom resume rendering templates
-//   - domain.PresetRepository: Built-in and user-defined tailoring presets
-//   - domain.PDFParseJobRepository: Asynchronous PDF resume parsing job status tracking
-//   - domain.QuotaRepository: Multi-tenant token and request rate limit accounting
-//   - domain.UserRepository: Tenant identity and role management
+//   - core.ProfileRepository: Main profiles, career graphs, and revision increments
+//   - core.BranchRepository: Targeted resume branches and immutable version snapshots
+//   - core.TemplateRepository: Built-in ATS and custom resume rendering templates
+//   - core.PresetRepository: Built-in and user-defined tailoring presets
+//   - core.PDFParseJobRepository: Asynchronous PDF resume parsing job status tracking
+//   - core.QuotaRepository: Multi-tenant token and request rate limit accounting
+//   - core.UserRepository: Tenant identity and role management
 package sql

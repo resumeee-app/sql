@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
@@ -20,10 +20,10 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 	userID := "user-pdf-test-1"
 
 	t.Run("Create and Get Job", func(t *testing.T) {
-		job := &domain.PDFParseJob{
+		job := &core.PDFParseJob{
 			ID:        "job-101",
 			UserID:    userID,
-			Status:    domain.PDFParseJobStatusPending,
+			Status:    core.PDFParseJobStatusPending,
 			Filename:  "sample_resume.pdf",
 			Provider:  "mock",
 			Model:     "mock-model",
@@ -43,7 +43,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		if retrieved.ID != "job-101" {
 			t.Errorf("expected ID 'job-101', got %q", retrieved.ID)
 		}
-		if retrieved.Status != domain.PDFParseJobStatusPending {
+		if retrieved.Status != core.PDFParseJobStatusPending {
 			t.Errorf("expected status 'pending', got %q", retrieved.Status)
 		}
 		if retrieved.Filename != "sample_resume.pdf" {
@@ -53,22 +53,22 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 
 	t.Run("GetJob returns ErrNotFound for non-existent job or wrong user", func(t *testing.T) {
 		_, err := repo.GetJob(ctx, userID, "non-existent")
-		if !errors.Is(err, domain.ErrNotFound) {
+		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound for non-existent job, got: %v", err)
 		}
 
 		_, err = repo.GetJob(ctx, "wrong-user", "job-101")
-		if !errors.Is(err, domain.ErrNotFound) {
+		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound for wrong user, got: %v", err)
 		}
 	})
 
 	t.Run("UpdateJobStatus to Processing and Completed with Result", func(t *testing.T) {
 		jobID := "job-102"
-		job := &domain.PDFParseJob{
+		job := &core.PDFParseJob{
 			ID:        jobID,
 			UserID:    userID,
-			Status:    domain.PDFParseJobStatusPending,
+			Status:    core.PDFParseJobStatusPending,
 			Filename:  "career.pdf",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -78,7 +78,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		}
 
 		// Transition to processing
-		if err := repo.UpdateJobStatus(ctx, jobID, domain.PDFParseJobStatusProcessing, nil, ""); err != nil {
+		if err := repo.UpdateJobStatus(ctx, jobID, core.PDFParseJobStatusProcessing, nil, ""); err != nil {
 			t.Fatalf("update to processing failed: %v", err)
 		}
 
@@ -86,7 +86,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get failed: %v", err)
 		}
-		if proc.Status != domain.PDFParseJobStatusProcessing {
+		if proc.Status != core.PDFParseJobStatusProcessing {
 			t.Errorf("expected status 'processing', got %q", proc.Status)
 		}
 
@@ -101,7 +101,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			},
 		}
 
-		if err := repo.UpdateJobStatus(ctx, jobID, domain.PDFParseJobStatusCompleted, resultPayload, ""); err != nil {
+		if err := repo.UpdateJobStatus(ctx, jobID, core.PDFParseJobStatusCompleted, resultPayload, ""); err != nil {
 			t.Fatalf("update to completed failed: %v", err)
 		}
 
@@ -109,7 +109,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get completed failed: %v", err)
 		}
-		if comp.Status != domain.PDFParseJobStatusCompleted {
+		if comp.Status != core.PDFParseJobStatusCompleted {
 			t.Errorf("expected status 'completed', got %q", comp.Status)
 		}
 		if comp.CompletedAt == nil {
@@ -128,10 +128,10 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 
 	t.Run("UpdateJobStatus to Failed with Error Message", func(t *testing.T) {
 		jobID := "job-103"
-		job := &domain.PDFParseJob{
+		job := &core.PDFParseJob{
 			ID:        jobID,
 			UserID:    userID,
-			Status:    domain.PDFParseJobStatusPending,
+			Status:    core.PDFParseJobStatusPending,
 			Filename:  "damaged.pdf",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -141,7 +141,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		}
 
 		errMsg := "LLM token rate limit exceeded"
-		if err := repo.UpdateJobStatus(ctx, jobID, domain.PDFParseJobStatusFailed, nil, errMsg); err != nil {
+		if err := repo.UpdateJobStatus(ctx, jobID, core.PDFParseJobStatusFailed, nil, errMsg); err != nil {
 			t.Fatalf("update to failed failed: %v", err)
 		}
 
@@ -149,7 +149,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get failed: %v", err)
 		}
-		if failed.Status != domain.PDFParseJobStatusFailed {
+		if failed.Status != core.PDFParseJobStatusFailed {
 			t.Errorf("expected status 'failed', got %q", failed.Status)
 		}
 		if failed.ErrorMessage != errMsg {
@@ -161,17 +161,17 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 	})
 
 	t.Run("FailInterruptedJobs marks in-flight jobs as failed on reboot", func(t *testing.T) {
-		pendingJob := &domain.PDFParseJob{
+		pendingJob := &core.PDFParseJob{
 			ID:        "job-interrupted-1",
 			UserID:    userID,
-			Status:    domain.PDFParseJobStatusPending,
+			Status:    core.PDFParseJobStatusPending,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
-		procJob := &domain.PDFParseJob{
+		procJob := &core.PDFParseJob{
 			ID:        "job-interrupted-2",
 			UserID:    userID,
-			Status:    domain.PDFParseJobStatusProcessing,
+			Status:    core.PDFParseJobStatusProcessing,
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
@@ -188,12 +188,12 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		}
 
 		j1, _ := repo.GetJob(ctx, userID, "job-interrupted-1")
-		if j1.Status != domain.PDFParseJobStatusFailed || j1.ErrorMessage != reason {
+		if j1.Status != core.PDFParseJobStatusFailed || j1.ErrorMessage != reason {
 			t.Errorf("expected j1 to be failed with %q, got status %q msg %q", reason, j1.Status, j1.ErrorMessage)
 		}
 
 		j2, _ := repo.GetJob(ctx, userID, "job-interrupted-2")
-		if j2.Status != domain.PDFParseJobStatusFailed || j2.ErrorMessage != reason {
+		if j2.Status != core.PDFParseJobStatusFailed || j2.ErrorMessage != reason {
 			t.Errorf("expected j2 to be failed with %q, got status %q msg %q", reason, j2.Status, j2.ErrorMessage)
 		}
 	})

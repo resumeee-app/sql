@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	"github.com/resumeee-app/resumeee-core/domain"
+	"github.com/resumeee-app/resumeee-core"
 )
 
 // Option defines a functional configuration option for Store bundles.
@@ -136,13 +136,13 @@ func SeedBaseline(ctx context.Context, db *gorm.DB, cfg Config) error {
 		branchRepo := NewBranchRepository(tx)
 		templateRepo := NewTemplateRepository(tx)
 		presetRepo := NewPresetRepository(tx)
-		return domain.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
+		return core.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
 	})
 }
 
 // NewStoreBundle executes Phase 4 of store initialization:
 // instantiating repository handles with injected dependencies.
-func NewStoreBundle(db *gorm.DB, opts ...Option) (domain.Store, error) {
+func NewStoreBundle(db *gorm.DB, opts ...Option) (core.Store, error) {
 	if db == nil {
 		return nil, errors.New("database instance cannot be nil")
 	}
@@ -163,7 +163,7 @@ func NewStoreBundle(db *gorm.DB, opts ...Option) (domain.Store, error) {
 		return nil
 	}
 
-	return &domain.StoreBundle{
+	return &core.StoreBundle{
 		ProfileRepo:  NewProfileRepository(db),
 		PresetRepo:   NewPresetRepository(db),
 		TemplateRepo: NewTemplateRepository(db),
@@ -180,14 +180,14 @@ func NewStoreBundle(db *gorm.DB, opts ...Option) (domain.Store, error) {
 // Phase 2: Schema auto-migration (if enabled).
 // Phase 3: Idempotent baseline data seeding.
 // Phase 4: Repository bundle instantiation.
-func Open(ctx context.Context, cfg Config) (domain.Store, error) {
+func Open(ctx context.Context, cfg Config) (core.Store, error) {
 	// Phase 1: Connection & Pool Resolution
 	db, err := ResolveConnection(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("resolving database connection: %w", err)
 	}
 
-	closeOnErr := func(cause error) (domain.Store, error) {
+	closeOnErr := func(cause error) (core.Store, error) {
 		if sqlDB, dbErr := db.DB(); dbErr == nil && sqlDB != nil {
 			_ = sqlDB.Close()
 		}
@@ -214,8 +214,8 @@ func Open(ctx context.Context, cfg Config) (domain.Store, error) {
 	return store, nil
 }
 
-// OpenWithOptions initializes a domain.Store applying functional ConfigOptions on top of DefaultConfig().
-func OpenWithOptions(ctx context.Context, opts ...ConfigOption) (domain.Store, error) {
+// OpenWithOptions initializes a core.Store applying functional ConfigOptions on top of DefaultConfig().
+func OpenWithOptions(ctx context.Context, opts ...ConfigOption) (core.Store, error) {
 	cfg := DefaultConfig()
 	for _, opt := range opts {
 		if opt == nil {
