@@ -136,7 +136,7 @@ func SeedBaseline(ctx context.Context, db *gorm.DB, cfg Config) error {
 		branchRepo := NewBranchRepository(tx)
 		templateRepo := NewTemplateRepository(tx)
 		presetRepo := NewPresetRepository(tx)
-		return SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
+		return domain.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
 	})
 }
 

@@ -57,11 +57,11 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		name string
 		id   string
 	}{
-		{"Standard Clean", TemplateStandardCleanID},
-		{"Detailed Immigration / CV", TemplateDetailedImmigrationCVID},
-		{"ATS Minimal Plain-Text & Clean HTML", TemplateATSMinimalTxtID},
-		{"ATS Modern Tech", TemplateATSHybridTechID},
-		{"ATS Executive Clean", TemplateATSExecutiveCleanID},
+		{"Standard Clean", domain.TemplateStandardCleanID},
+		{"Detailed Immigration / CV", domain.TemplateDetailedImmigrationCVID},
+		{"ATS Minimal Plain-Text & Clean HTML", domain.TemplateATSMinimalTxtID},
+		{"ATS Modern Tech", domain.TemplateATSHybridTechID},
+		{"ATS Executive Clean", domain.TemplateATSExecutiveCleanID},
 	}
 
 	for _, exp := range expectedTemplates {
@@ -125,8 +125,8 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	if defaultBranch.Name != domain.DefaultBranchName {
 		t.Errorf("expected default branch name %s, got %s", domain.DefaultBranchName, defaultBranch.Name)
 	}
-	if defaultBranch.TemplateSetID != TemplateStandardCleanID {
-		t.Errorf("expected default branch template %s, got %s", TemplateStandardCleanID, defaultBranch.TemplateSetID)
+	if defaultBranch.TemplateSetID != domain.TemplateStandardCleanID {
+		t.Errorf("expected default branch template %s, got %s", domain.TemplateStandardCleanID, defaultBranch.TemplateSetID)
 	}
 	if defaultBranch.ActiveVersionID == nil || *defaultBranch.ActiveVersionID == "" {
 		t.Fatalf("expected default branch to have an active version")
@@ -258,7 +258,7 @@ func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 		ID:            "branch-custom-1",
 		UserID:        "default",
 		Name:          "Custom Branch",
-		TemplateSetID: TemplateStandardCleanID,
+		TemplateSetID: domain.TemplateStandardCleanID,
 		IsDefault:     false,
 	}
 	if err := branchRepo.CreateBranch(ctx, customBranch); err != nil {

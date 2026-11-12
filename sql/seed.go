@@ -4,21 +4,6 @@ import (
 	"context"
 
 	"gorm.io/gorm"
-
-	"github.com/resumeee-app/resumeee-core/domain"
-)
-
-const (
-	// Built-in Template Set IDs
-	TemplateStandardCleanID         = domain.TemplateStandardCleanID
-	TemplateDetailedImmigrationCVID = domain.TemplateDetailedImmigrationCVID
-	TemplateATSMinimalTxtID         = domain.TemplateATSMinimalTxtID
-	TemplateATSHybridTechID         = domain.TemplateATSHybridTechID
-	TemplateATSExecutiveCleanID     = domain.TemplateATSExecutiveCleanID
-
-	// Built-in Preset IDs
-	Preset1PageTechResumeID          = domain.Preset1PageTechResumeID
-	PresetImmigrationFullHistoryCVID = domain.PresetImmigrationFullHistoryCVID
 )
 
 // SeedDefaultDataDB idempotently populates default user profile, built-in template sets,

@@ -150,7 +150,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	newTenantID := "tenant-sqlite-99"
-	err = EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = domain.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
 		ID:       newTenantID,
 		Email:    "tenant99@example.com",
 		FullName: "Tenant Ninety-Nine",
@@ -190,7 +190,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Run second time idempotently with attempted role demotion
-	err = EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
+	err = domain.EnsureTenantProvisioned(ctx, store, newTenantID, &domain.User{
 		ID:       newTenantID,
 		Email:    "tenant99.modified@example.com",
 		FullName: "Tenant Ninety-Nine Modified",
