@@ -131,4 +131,3 @@ func (r *pdfParseJobRepository) CleanupCompletedJobs(ctx context.Context, userID
 		Delete(&core.PDFParseJob{}).Error
 	return mapError(err)
 }
-

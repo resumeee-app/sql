@@ -548,7 +548,7 @@ func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 			MainRevision: 1,
 		},
 		MainRevision: 1,
-		Skills:         []core.Skill{skillTop}, // Notice: only sk-top is in snapshot.Skills initially
+		Skills:       []core.Skill{skillTop}, // Notice: only sk-top is in snapshot.Skills initially
 		Experiences: []core.WorkExperience{
 			{
 				ID:        "exp-nested-1",
@@ -1234,12 +1234,12 @@ func TestProfileRepository_SkillResolution(t *testing.T) {
 
 	// 2. Create Project referencing one existing skill by case-insensitive name and one new skill
 	proj := &core.Project{
-		ID:        core.GenerateID("proj"),
-		ShortID:   core.GenerateShortID("proj"),
-		UserID:    userID,
-		Name:      "Cloud Pipeline",
+		ID:      core.GenerateID("proj"),
+		ShortID: core.GenerateShortID("proj"),
+		UserID:  userID,
+		Name:    "Cloud Pipeline",
 		Skills: []core.Skill{
-			{Name: "go"}, // case-insensitive match with existing "Go"
+			{Name: "go"},        // case-insensitive match with existing "Go"
 			{Name: "Terraform"}, // new skill
 		},
 	}
@@ -1792,5 +1792,3 @@ func TestBranchRepository_ATSScorePropagation(t *testing.T) {
 		}
 	})
 }
-
-

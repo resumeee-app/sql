@@ -25,10 +25,13 @@ github.com/resumeee-app/
 ## Quality Gates
 
 ```bash
-# Unit & race detection tests
+# Format check (gofmt)
+test -z "$(gofmt -l .)"
+
+# Unit & race detection tests (includes TestGoFmtCompliance)
 go test -race -v ./...
 
-# Static analysis linter
+# Static analysis & gofmt linter
 golangci-lint run ./...
 ```
 
