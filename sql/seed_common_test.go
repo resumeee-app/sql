@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/resumeee-app/resumeee-core/domain"
-	"github.com/resumeee-app/resumeee-storage-sql/memory"
+	"github.com/resumeee-app/resumeee-core/memory"
 	"github.com/resumeee-app/resumeee-storage-sql/sql"
 )
 
