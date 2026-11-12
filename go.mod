@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
-	github.com/resumeee-app/resumeee-core v0.0.0-20261112062736-93d82976ec6a
+	github.com/resumeee-app/resumeee-core v0.0.0-20261112064600-8a4aa3c5d154
 	gorm.io/gorm v1.31.2
 )
 
