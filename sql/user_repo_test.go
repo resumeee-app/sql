@@ -9,14 +9,14 @@ import (
 	"github.com/resumeee-app/resumeee-core/seed"
 )
 
-func TestUserRepository_CRUD(t *testing.T) {
+func TestUserStore_CRUD(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file::memory:?cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open in-memory db: %v", err)
 	}
 
-	repo := NewUserRepository(db)
+	repo := NewUserStore(db)
 
 	t.Run("Validation failure on nil user or empty ID", func(t *testing.T) {
 		if err := repo.UpsertUser(ctx, nil); !errors.Is(err, core.ErrValidation) {
@@ -27,8 +27,8 @@ func TestUserRepository_CRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("GetUser not found returns ErrNotFound", func(t *testing.T) {
-		_, err := repo.GetUser(ctx, "non-existent-user-id")
+	t.Run("User not found returns ErrNotFound", func(t *testing.T) {
+		_, err := repo.User(ctx, "non-existent-user-id")
 		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound, got %v", err)
 		}
@@ -47,7 +47,7 @@ func TestUserRepository_CRUD(t *testing.T) {
 			t.Fatalf("failed to upsert user: %v", err)
 		}
 
-		retrieved, err := repo.GetUser(ctx, "user-alpha")
+		retrieved, err := repo.User(ctx, "user-alpha")
 		if err != nil {
 			t.Fatalf("failed to get user: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestUserRepository_CRUD(t *testing.T) {
 			t.Fatalf("failed to update user: %v", err)
 		}
 
-		retrieved, err := repo.GetUser(ctx, "user-alpha")
+		retrieved, err := repo.User(ctx, "user-alpha")
 		if err != nil {
 			t.Fatalf("failed to get updated user: %v", err)
 		}
@@ -125,7 +125,7 @@ func TestUserRepository_CRUD(t *testing.T) {
 			t.Fatalf("failed to upsert user with attempted demotion: %v", err)
 		}
 
-		retrieved, err := repo.GetUser(ctx, "admin-user-1")
+		retrieved, err := repo.User(ctx, "admin-user-1")
 		if err != nil {
 			t.Fatalf("failed to retrieve admin user: %v", err)
 		}
@@ -146,8 +146,8 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	if store.User() == nil {
-		t.Fatal("expected store.User() to not be nil")
+	if store.Users() == nil {
+		t.Fatal("expected store.Users() to not be nil")
 	}
 
 	newTenantID := "tenant-sqlite-99"
@@ -163,7 +163,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Verify User record was created
-	u, err := store.User().GetUser(ctx, newTenantID)
+	u, err := store.Users().User(ctx, newTenantID)
 	if err != nil {
 		t.Fatalf("failed to get provisioned user: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 	}
 
 	// Verify Profile was created
-	prof, err := store.Profile().GetProfile(ctx, newTenantID)
+	prof, err := store.Profiles().Profile(ctx, newTenantID)
 	if err != nil {
 		t.Fatalf("failed to get provisioned profile: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 
 	// Verify Default Branch was created
 	defaultBranchID := core.DefaultBranchID(newTenantID)
-	branch, err := store.Branch().GetBranch(ctx, newTenantID, defaultBranchID)
+	branch, err := store.Branches().Branch(ctx, newTenantID, defaultBranchID)
 	if err != nil {
 		t.Fatalf("failed to get provisioned branch: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestStore_UserAccessorAndEnsureTenantProvisioned(t *testing.T) {
 		t.Fatalf("second call to EnsureTenantProvisioned failed: %v", err)
 	}
 
-	u2, err := store.User().GetUser(ctx, newTenantID)
+	u2, err := store.Users().User(ctx, newTenantID)
 	if err != nil {
 		t.Fatalf("failed to get user after second call: %v", err)
 	}
