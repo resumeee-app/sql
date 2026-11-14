@@ -1,14 +1,15 @@
-// Package sql provides multi-database relational persistence implementations for Resumeee repositories,
+// Package sql provides multi-database relational persistence implementations for Resumeee stores,
 // schema migrations, connection pooling, and baseline seed utilities.
 //
-// Implemented repository interfaces include:
-//   - core.ProfileRepository: Main profiles, career graphs, and revision increments
-//   - core.BranchRepository: Targeted resume branches and immutable version snapshots
-//   - core.TemplateRepository: Built-in ATS and custom resume rendering templates
-//   - core.PresetRepository: Built-in and user-defined tailoring presets
-//   - core.PDFParseJobRepository: Asynchronous PDF resume parsing job status tracking
-//   - core.QuotaRepository: Multi-tenant token and request rate limit accounting
-//   - core.UserRepository: Tenant identity and role management
+// Implemented store interfaces include:
+//   - core.ProfileStore: Main profiles, snapshots, career graph replacement, and revision increments
+//   - core.CareerStore: Skills, work experiences, projects, education, certifications, and facts
+//   - core.BranchStore: Targeted resume branches and immutable version snapshots
+//   - core.TemplateStore: Built-in ATS and custom resume rendering templates
+//   - core.PresetStore: Built-in and user-defined tailoring presets
+//   - core.PDFJobStore: Asynchronous PDF resume parsing job status tracking
+//   - core.QuotaStore: Multi-tenant token and request rate limit accounting
+//   - core.UserStore: Tenant identity and role management
 package sql
 
 import (
@@ -78,24 +79,24 @@ func New(dsn string) (*gorm.DB, error) {
 	return db, nil
 }
 
-// AutoMigrate migrates all entity tables and join tables defined by domain models.
+// AutoMigrate migrates all entity tables and join tables defined by relational persistence models.
 func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 	if err := db.WithContext(ctx).AutoMigrate(
-		&core.Profile{},
-		&core.Skill{},
-		&core.WorkExperience{},
-		&core.Project{},
-		&core.Education{},
-		&core.Certification{},
-		&core.Fact{},
-		&core.Preset{},
-		&core.TemplateSet{},
-		&core.Branch{},
-		&core.BranchVersion{},
-		&core.PDFParseJob{},
-		&core.User{},
-		&core.TenantQuota{},
-		&core.LLMUsageRecord{},
+		&profileRecord{},
+		&skillRecord{},
+		&workExperienceRecord{},
+		&projectRecord{},
+		&educationRecord{},
+		&certificationRecord{},
+		&factRecord{},
+		&presetRecord{},
+		&templateSetRecord{},
+		&branchRecord{},
+		&branchVersionRecord{},
+		&pdfParseJobRecord{},
+		&userRecord{},
+		&tenantQuotaRecord{},
+		&llmUsageRecord{},
 	); err != nil {
 		return err
 	}
@@ -176,13 +177,14 @@ func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (cor
 	}
 
 	return &core.StoreBundle{
-		ProfileRepo:  NewProfileRepository(db),
-		PresetRepo:   NewPresetRepository(db),
-		TemplateRepo: NewTemplateRepository(db),
-		BranchRepo:   NewBranchRepository(db),
-		PDFJobRepo:   NewPDFParseJobRepository(db),
-		QuotaRepo:    NewQuotaRepository(db),
-		UserRepo:     NewUserRepository(db),
-		Closer:       closer,
+		ProfileStore:  NewProfileStore(db),
+		CareerStore:   NewCareerStore(db),
+		PresetStore:   NewPresetStore(db),
+		TemplateStore: NewTemplateStore(db),
+		BranchStore:   NewBranchStore(db),
+		PDFJobStore:   NewPDFJobStore(db),
+		QuotaStore:    NewQuotaStore(db),
+		UserStore:     NewUserStore(db),
+		Closer:        closer,
 	}, nil
 }

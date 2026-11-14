@@ -19,12 +19,12 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 
-	profileRepo := NewProfileRepository(db)
-	templateRepo := NewTemplateRepository(db)
-	presetRepo := NewPresetRepository(db)
+	profileRepo := NewProfileStore(db)
+	templateRepo := NewTemplateStore(db)
+	presetRepo := NewPresetStore(db)
 
 	// 1. Verify default profile
-	prof, err := profileRepo.GetProfile(ctx, "default")
+	prof, err := profileRepo.Profile(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to get default profile: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 	}
 
 	// 4. Verify default branch seeded
-	branchRepo := NewBranchRepository(db)
+	branchRepo := NewBranchStore(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)
@@ -133,7 +133,7 @@ func TestSeedDefaultData_FirstBoot(t *testing.T) {
 		t.Fatalf("expected default branch to have an active version")
 	}
 
-	ver, err := branchRepo.GetVersion(ctx, defaultBranch.ID, *defaultBranch.ActiveVersionID)
+	ver, err := branchRepo.Version(ctx, defaultBranch.ID, *defaultBranch.ActiveVersionID)
 	if err != nil {
 		t.Fatalf("failed to get default branch active version: %v", err)
 	}
@@ -163,19 +163,19 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 		t.Fatalf("first SeedDefaultData failed: %v", err)
 	}
 
-	profileRepo := NewProfileRepository(db)
-	templateRepo := NewTemplateRepository(db)
-	presetRepo := NewPresetRepository(db)
+	profileRepo := NewProfileStore(db)
+	templateRepo := NewTemplateStore(db)
+	presetRepo := NewPresetStore(db)
 
 	// User modifies profile
-	prof, err := profileRepo.GetProfile(ctx, "default")
+	prof, err := profileRepo.Profile(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to fetch profile: %v", err)
 	}
 	prof.FullName = "Alice Custom Name"
 	prof.Headline = "Distinguished Architect"
 	prof.MainRevision = 42
-	if err := db.Save(prof).Error; err != nil {
+	if err := db.Save(toProfileRecord(prof)).Error; err != nil {
 		t.Fatalf("failed to update profile directly: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	}
 
 	// Verify profile content was NOT overwritten
-	profAfter, err := profileRepo.GetProfile(ctx, "default")
+	profAfter, err := profileRepo.Profile(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to fetch profile after re-seed: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 		t.Errorf("expected exactly 2 presets after multiple seeds, got %d", len(presets))
 	}
 
-	branchRepo := NewBranchRepository(db)
+	branchRepo := NewBranchStore(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)
@@ -226,7 +226,7 @@ func TestSeedDefaultData_Idempotency(t *testing.T) {
 	}
 }
 
-func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
+func TestBranchStore_DefaultBranchImmutability(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file:seed_test_immutability?mode=memory&cache=shared")
 	if err != nil {
@@ -237,7 +237,7 @@ func TestBranchRepository_DefaultBranchImmutability(t *testing.T) {
 		t.Fatalf("SeedDefaultData failed: %v", err)
 	}
 
-	branchRepo := NewBranchRepository(db)
+	branchRepo := NewBranchStore(db)
 	branches, err := branchRepo.ListBranches(ctx, "default")
 	if err != nil {
 		t.Fatalf("failed to list branches: %v", err)

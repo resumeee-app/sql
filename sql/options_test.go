@@ -22,7 +22,7 @@ func TestOpenWithOptions_SQLite(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	prof, err := store.Profile().GetProfile(ctx, "custom-user")
+	prof, err := store.Profiles().Profile(ctx, "custom-user")
 	if err != nil {
 		t.Fatalf("expected seeded profile for 'custom-user', got: %v", err)
 	}

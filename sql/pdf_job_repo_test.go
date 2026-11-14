@@ -9,13 +9,13 @@ import (
 	"github.com/resumeee-app/resumeee-core"
 )
 
-func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
+func TestPDFJobStore_Lifecycle(t *testing.T) {
 	db, err := New("file::memory:?cache=shared")
 	if err != nil {
 		t.Fatalf("failed to initialize sqlite: %v", err)
 	}
 
-	repo := NewPDFParseJobRepository(db)
+	repo := NewPDFJobStore(db)
 	ctx := context.Background()
 	userID := "user-pdf-test-1"
 
@@ -35,7 +35,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Fatalf("failed to create job: %v", err)
 		}
 
-		retrieved, err := repo.GetJob(ctx, userID, "job-101")
+		retrieved, err := repo.Job(ctx, userID, "job-101")
 		if err != nil {
 			t.Fatalf("failed to get job: %v", err)
 		}
@@ -51,13 +51,13 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("GetJob returns ErrNotFound for non-existent job or wrong user", func(t *testing.T) {
-		_, err := repo.GetJob(ctx, userID, "non-existent")
+	t.Run("Job returns ErrNotFound for non-existent job or wrong user", func(t *testing.T) {
+		_, err := repo.Job(ctx, userID, "non-existent")
 		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound for non-existent job, got: %v", err)
 		}
 
-		_, err = repo.GetJob(ctx, "wrong-user", "job-101")
+		_, err = repo.Job(ctx, "wrong-user", "job-101")
 		if !errors.Is(err, core.ErrNotFound) {
 			t.Errorf("expected ErrNotFound for wrong user, got: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Fatalf("update to processing failed: %v", err)
 		}
 
-		proc, err := repo.GetJob(ctx, userID, jobID)
+		proc, err := repo.Job(ctx, userID, jobID)
 		if err != nil {
 			t.Fatalf("get failed: %v", err)
 		}
@@ -91,13 +91,13 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 		}
 
 		// Transition to completed with structured JSON result
-		resultPayload := map[string]any{
-			"basics": map[string]any{
-				"name":  "Ada Lovelace",
-				"email": "ada@analytical.org",
+		resultPayload := &core.JSONResume{
+			Basics: core.JSONResumeBasics{
+				Name:  "Ada Lovelace",
+				Email: "ada@analytical.org",
 			},
-			"skills": []any{
-				map[string]any{"name": "Mechanical Computation"},
+			Skills: []core.JSONResumeSkill{
+				{Name: "Mechanical Computation"},
 			},
 		}
 
@@ -105,7 +105,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Fatalf("update to completed failed: %v", err)
 		}
 
-		comp, err := repo.GetJob(ctx, userID, jobID)
+		comp, err := repo.Job(ctx, userID, jobID)
 		if err != nil {
 			t.Fatalf("get completed failed: %v", err)
 		}
@@ -116,13 +116,8 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Errorf("expected non-nil CompletedAt")
 		}
 
-		resMap, ok := comp.Result.(map[string]any)
-		if !ok {
-			t.Fatalf("expected map[string]any result, got %T: %+v", comp.Result, comp.Result)
-		}
-		basics, ok := resMap["basics"].(map[string]any)
-		if !ok || basics["name"] != "Ada Lovelace" {
-			t.Errorf("expected basics.name == 'Ada Lovelace', got %+v", resMap)
+		if comp.Result == nil || comp.Result.Basics.Name != "Ada Lovelace" {
+			t.Errorf("expected basics.name == 'Ada Lovelace', got %+v", comp.Result)
 		}
 	})
 
@@ -145,7 +140,7 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Fatalf("update to failed failed: %v", err)
 		}
 
-		failed, err := repo.GetJob(ctx, userID, jobID)
+		failed, err := repo.Job(ctx, userID, jobID)
 		if err != nil {
 			t.Fatalf("get failed: %v", err)
 		}
@@ -187,12 +182,12 @@ func TestPDFParseJobRepository_Lifecycle(t *testing.T) {
 			t.Fatalf("FailInterruptedJobs failed: %v", err)
 		}
 
-		j1, _ := repo.GetJob(ctx, userID, "job-interrupted-1")
+		j1, _ := repo.Job(ctx, userID, "job-interrupted-1")
 		if j1.Status != core.PDFParseJobStatusFailed || j1.ErrorMessage != reason {
 			t.Errorf("expected j1 to be failed with %q, got status %q msg %q", reason, j1.Status, j1.ErrorMessage)
 		}
 
-		j2, _ := repo.GetJob(ctx, userID, "job-interrupted-2")
+		j2, _ := repo.Job(ctx, userID, "job-interrupted-2")
 		if j2.Status != core.PDFParseJobStatusFailed || j2.ErrorMessage != reason {
 			t.Errorf("expected j2 to be failed with %q, got status %q msg %q", reason, j2.Status, j2.ErrorMessage)
 		}

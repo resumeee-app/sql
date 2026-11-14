@@ -12,86 +12,316 @@ import (
 	"github.com/resumeee-app/resumeee-core"
 )
 
-type branchRepository struct {
+// branchRecord is the GORM persistence model for core.Branch.
+type branchRecord struct {
+	ID                     string          `gorm:"primaryKey;type:text"`
+	UserID                 string          `gorm:"index;not null"`
+	Name                   string          `gorm:"not null"`
+	IsDefault              bool            `gorm:"default:false;index"`
+	TargetRole             string          `gorm:"column:target_role"`
+	TargetCompany          string          `gorm:"column:target_company"`
+	TargetRequirements     string          `gorm:"column:target_requirements"`
+	CustomDirectives       string          `gorm:"column:custom_directives"`
+	BranchInstructions     string          `gorm:"column:branch_instructions"`
+	TailoringStrategyID    *string         `gorm:"index"`
+	PresetID               *string         `gorm:"column:preset_id;index"`
+	TemplateSetID          string          `gorm:"index;not null"`
+	ProviderOverride       string          `gorm:"column:provider_override"`
+	ModelOverride          string          `gorm:"column:model_override"`
+	ReasoningLevel         string          `gorm:"column:reasoning_level"`
+	PinnedEntityIDs        []string        `gorm:"serializer:json"`
+	ExcludedEntityIDs      []string        `gorm:"serializer:json"`
+	ActiveVersionID        *string         `gorm:"index"`
+	GapReport              *core.GapReport `gorm:"serializer:json"`
+	ATSScore               *core.ATSScore  `gorm:"serializer:json"`
+	LastSyncedMainRevision int64           `gorm:"column:last_synced_main_revision"`
+	IsStale                bool            `gorm:"-"`
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// TableName overrides the GORM table name to target_resumes.
+func (branchRecord) TableName() string {
+	return "target_resumes"
+}
+
+// Normalize synchronizes aliases prior to persistence.
+func (r *branchRecord) Normalize() error {
+	b := toCoreBranch(r)
+	if err := b.Normalize(); err != nil {
+		return err
+	}
+	r.TailoringStrategyID = b.TailoringStrategyID
+	r.PresetID = b.PresetID
+	r.CustomDirectives = b.CustomDirectives
+	r.BranchInstructions = b.BranchInstructions
+	return nil
+}
+
+func toBranchRecord(b *core.Branch) *branchRecord {
+	if b == nil {
+		return nil
+	}
+	return &branchRecord{
+		ID:                     b.ID,
+		UserID:                 b.UserID,
+		Name:                   b.Name,
+		IsDefault:              b.IsDefault,
+		TargetRole:             b.TargetRole,
+		TargetCompany:          b.TargetCompany,
+		TargetRequirements:     b.TargetRequirements,
+		CustomDirectives:       b.CustomDirectives,
+		BranchInstructions:     b.BranchInstructions,
+		TailoringStrategyID:    b.TailoringStrategyID,
+		PresetID:               b.PresetID,
+		TemplateSetID:          b.TemplateSetID,
+		ProviderOverride:       b.ProviderOverride,
+		ModelOverride:          b.ModelOverride,
+		ReasoningLevel:         b.ReasoningLevel,
+		PinnedEntityIDs:        b.PinnedEntityIDs,
+		ExcludedEntityIDs:      b.ExcludedEntityIDs,
+		ActiveVersionID:        b.ActiveVersionID,
+		GapReport:              b.GapReport,
+		ATSScore:               b.ATSScore,
+		LastSyncedMainRevision: b.LastSyncedMainRevision,
+		IsStale:                b.IsStale,
+		CreatedAt:              b.CreatedAt,
+		UpdatedAt:              b.UpdatedAt,
+	}
+}
+
+func toCoreBranch(r *branchRecord) *core.Branch {
+	if r == nil {
+		return nil
+	}
+	return &core.Branch{
+		ID:                     r.ID,
+		UserID:                 r.UserID,
+		Name:                   r.Name,
+		IsDefault:              r.IsDefault,
+		TargetRole:             r.TargetRole,
+		TargetCompany:          r.TargetCompany,
+		TargetRequirements:     r.TargetRequirements,
+		CustomDirectives:       r.CustomDirectives,
+		BranchInstructions:     r.BranchInstructions,
+		TailoringStrategyID:    r.TailoringStrategyID,
+		PresetID:               r.PresetID,
+		TemplateSetID:          r.TemplateSetID,
+		ProviderOverride:       r.ProviderOverride,
+		ModelOverride:          r.ModelOverride,
+		ReasoningLevel:         r.ReasoningLevel,
+		PinnedEntityIDs:        r.PinnedEntityIDs,
+		ExcludedEntityIDs:      r.ExcludedEntityIDs,
+		ActiveVersionID:        r.ActiveVersionID,
+		GapReport:              r.GapReport,
+		ATSScore:               r.ATSScore,
+		LastSyncedMainRevision: r.LastSyncedMainRevision,
+		IsStale:                r.IsStale,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
+	}
+}
+
+// branchVersionRecord is the GORM persistence model for core.BranchVersion.
+type branchVersionRecord struct {
+	ID                 string                `gorm:"primaryKey;type:text"`
+	UserID             string                `gorm:"index;not null"`
+	ResumeID           string                `gorm:"uniqueIndex:idx_resume_version,priority:1;column:resume_id;not null"`
+	BranchID           string                `gorm:"column:branch_id;index"`
+	VersionNumber      int                   `gorm:"uniqueIndex:idx_resume_version,priority:2;column:version_number;not null"`
+	Status             core.VersionStatus    `gorm:"index;not null"`
+	MainRevisionUsed   int64                 `gorm:"column:main_revision_used"`
+	TemplateSetIDUsed  string                `gorm:"column:template_set_id_used"`
+	StrategyIDUsed     *string               `gorm:"column:strategy_id_used"`
+	ProviderUsed       string                `gorm:"column:provider_used"`
+	ModelUsed          string                `gorm:"column:model_used"`
+	SourceType         core.SourceType       `gorm:"column:source_type"`
+	ParentVersionID    *string               `gorm:"index"`
+	TailoredContent    *core.TailoredContent `gorm:"serializer:json"`
+	GapReport          *core.GapReport       `gorm:"serializer:json"`
+	ATSScore           *core.ATSScore        `gorm:"serializer:json"`
+	ValidationWarnings []string              `gorm:"serializer:json"`
+	ErrorMessage       string                `gorm:"column:error_message"`
+	HTMLOutput         string                `gorm:"column:html_output"`
+	MarkdownOutput     string                `gorm:"column:markdown_output"`
+	PlainTextOutput    string                `gorm:"column:plain_text_output"`
+	CreatedAt          time.Time
+	CompletedAt        *time.Time
+}
+
+// TableName overrides the GORM table name to resume_versions.
+func (branchVersionRecord) TableName() string {
+	return "resume_versions"
+}
+
+// Normalize synchronizes resume and branch aliases prior to persistence.
+func (r *branchVersionRecord) Normalize() error {
+	v := toCoreBranchVersion(r)
+	if err := v.Normalize(); err != nil {
+		return err
+	}
+	r.ResumeID = v.ResumeID
+	r.BranchID = v.BranchID
+	return nil
+}
+
+func toBranchVersionRecord(v *core.BranchVersion) *branchVersionRecord {
+	if v == nil {
+		return nil
+	}
+	return &branchVersionRecord{
+		ID:                 v.ID,
+		UserID:             v.UserID,
+		ResumeID:           v.ResumeID,
+		BranchID:           v.BranchID,
+		VersionNumber:      v.VersionNumber,
+		Status:             v.Status,
+		MainRevisionUsed:   v.MainRevisionUsed,
+		TemplateSetIDUsed:  v.TemplateSetIDUsed,
+		StrategyIDUsed:     v.StrategyIDUsed,
+		ProviderUsed:       v.ProviderUsed,
+		ModelUsed:          v.ModelUsed,
+		SourceType:         v.SourceType,
+		ParentVersionID:    v.ParentVersionID,
+		TailoredContent:    v.TailoredContent,
+		GapReport:          v.GapReport,
+		ATSScore:           v.ATSScore,
+		ValidationWarnings: v.ValidationWarnings,
+		ErrorMessage:       v.ErrorMessage,
+		HTMLOutput:         v.HTMLOutput,
+		MarkdownOutput:     v.MarkdownOutput,
+		PlainTextOutput:    v.PlainTextOutput,
+		CreatedAt:          v.CreatedAt,
+		CompletedAt:        v.CompletedAt,
+	}
+}
+
+func toCoreBranchVersion(r *branchVersionRecord) *core.BranchVersion {
+	if r == nil {
+		return nil
+	}
+	v := &core.BranchVersion{
+		ID:                 r.ID,
+		UserID:             r.UserID,
+		ResumeID:           r.ResumeID,
+		BranchID:           r.BranchID,
+		VersionNumber:      r.VersionNumber,
+		Status:             r.Status,
+		MainRevisionUsed:   r.MainRevisionUsed,
+		TemplateSetIDUsed:  r.TemplateSetIDUsed,
+		StrategyIDUsed:     r.StrategyIDUsed,
+		ProviderUsed:       r.ProviderUsed,
+		ModelUsed:          r.ModelUsed,
+		SourceType:         r.SourceType,
+		ParentVersionID:    r.ParentVersionID,
+		TailoredContent:    r.TailoredContent,
+		GapReport:          r.GapReport,
+		ATSScore:           r.ATSScore,
+		ValidationWarnings: r.ValidationWarnings,
+		ErrorMessage:       r.ErrorMessage,
+		HTMLOutput:         r.HTMLOutput,
+		MarkdownOutput:     r.MarkdownOutput,
+		PlainTextOutput:    r.PlainTextOutput,
+		CreatedAt:          r.CreatedAt,
+		CompletedAt:        r.CompletedAt,
+	}
+	_ = v.Normalize()
+	return v
+}
+
+// BranchStore implements core.BranchStore backed by GORM.
+type BranchStore struct {
 	db *gorm.DB
 }
 
-// NewBranchRepository constructs a SQLite-backed BranchRepository.
-func NewBranchRepository(db *gorm.DB) core.BranchRepository {
-	return &branchRepository{db: db}
+var _ core.BranchStore = (*BranchStore)(nil)
+
+// NewBranchStore constructs a SQL-backed BranchStore.
+func NewBranchStore(db *gorm.DB) *BranchStore {
+	return &BranchStore{db: db}
 }
 
 // ListBranches retrieves all branches for a user and calculates staleness against the current main revision.
-func (r *branchRepository) ListBranches(ctx context.Context, userID string) ([]core.Branch, error) {
-	var branches []core.Branch
-	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("is_default DESC, created_at DESC").Find(&branches).Error; err != nil {
+func (s *BranchStore) ListBranches(ctx context.Context, userID string) ([]core.Branch, error) {
+	var records []branchRecord
+	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).Order("is_default DESC, created_at DESC").Find(&records).Error; err != nil {
 		return nil, mapError(err)
 	}
 
 	var currentMainRev int64
-	if err := r.db.WithContext(ctx).
-		Model(&core.Profile{}).
+	if err := s.db.WithContext(ctx).
+		Model(&profileRecord{}).
 		Where("user_id = ?", userID).
 		Select("main_revision").
 		Scan(&currentMainRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
 	}
 
-	for i := range branches {
-		branches[i].IsStale = branches[i].IsStaleRevision(currentMainRev)
+	branches := make([]core.Branch, len(records))
+	for i := range records {
+		b := *toCoreBranch(&records[i])
+		b.IsStale = b.IsStaleRevision(currentMainRev)
+		branches[i] = b
 	}
 
 	return branches, nil
 }
 
-// GetBranch retrieves a specific branch record and calculates its staleness.
-func (r *branchRepository) GetBranch(ctx context.Context, userID, id string) (*core.Branch, error) {
-	var branch core.Branch
-	query := r.db.WithContext(ctx).Where("id = ?", id)
+// Branch retrieves a specific branch record and calculates its staleness.
+func (s *BranchStore) Branch(ctx context.Context, userID, id string) (*core.Branch, error) {
+	var rec branchRecord
+	query := s.db.WithContext(ctx).Where("id = ?", id)
 	if userID != "" {
 		query = query.Where("user_id = ?", userID)
 	}
-	if err := query.First(&branch).Error; err != nil {
+	if err := query.First(&rec).Error; err != nil {
 		return nil, mapError(err)
 	}
 
 	targetUserID := userID
 	if targetUserID == "" {
-		targetUserID = branch.UserID
+		targetUserID = rec.UserID
 	}
 
 	var currentMainRev int64
-	if err := r.db.WithContext(ctx).
-		Model(&core.Profile{}).
+	if err := s.db.WithContext(ctx).
+		Model(&profileRecord{}).
 		Where("user_id = ?", targetUserID).
 		Select("main_revision").
 		Scan(&currentMainRev).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, mapError(err)
 	}
+	branch := toCoreBranch(&rec)
 	branch.IsStale = branch.IsStaleRevision(currentMainRev)
 
-	return &branch, nil
+	return branch, nil
 }
 
 // CreateBranch inserts a new resume branch record.
-func (r *branchRepository) CreateBranch(ctx context.Context, branch *core.Branch) error {
+func (s *BranchStore) CreateBranch(ctx context.Context, branch *core.Branch) error {
+	if branch == nil {
+		return core.ErrValidation
+	}
 	if branch.CreatedAt.IsZero() {
 		branch.CreatedAt = time.Now().UTC()
 	}
 	branch.UpdatedAt = time.Now().UTC()
-	return mapError(r.db.WithContext(ctx).Create(branch).Error)
+	return mapError(s.db.WithContext(ctx).Create(toBranchRecord(branch)).Error)
 }
 
 // UpdateBranch updates mutable branch fields and refreshes the updated timestamp.
-func (r *branchRepository) UpdateBranch(ctx context.Context, branch *core.Branch) error {
+func (s *BranchStore) UpdateBranch(ctx context.Context, branch *core.Branch) error {
+	if branch == nil {
+		return core.ErrValidation
+	}
 	branch.UpdatedAt = time.Now().UTC()
-	return mapError(r.db.WithContext(ctx).Save(branch).Error)
+	return mapError(s.db.WithContext(ctx).Save(toBranchRecord(branch)).Error)
 }
 
 // DeleteBranch removes a non-default branch and cascades deletion to all associated versions.
-func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var branch core.Branch
+func (s *BranchStore) DeleteBranch(ctx context.Context, userID, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var branch branchRecord
 		if err := tx.Where("user_id = ? AND id = ?", userID, id).First(&branch).Error; err != nil {
 			return mapError(err)
 		}
@@ -100,10 +330,10 @@ func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) 
 		}
 
 		// Clean up branch versions
-		if err := tx.Where("resume_id = ? OR branch_id = ?", id, id).Delete(&core.BranchVersion{}).Error; err != nil {
+		if err := tx.Where("resume_id = ? OR branch_id = ?", id, id).Delete(&branchVersionRecord{}).Error; err != nil {
 			return err
 		}
-		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&core.Branch{})
+		res := tx.Where("user_id = ? AND id = ?", userID, id).Delete(&branchRecord{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -115,20 +345,15 @@ func (r *branchRepository) DeleteBranch(ctx context.Context, userID, id string) 
 }
 
 // CreateVersion atomically assigns a sequential version number and creates a new branch version.
-func (r *branchRepository) CreateVersion(ctx context.Context, version *core.BranchVersion) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+func (s *BranchStore) CreateVersion(ctx context.Context, version *core.BranchVersion) error {
+	if version == nil {
+		return core.ErrValidation
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_ = version.Normalize()
 		targetID := version.ResumeID
-		if targetID == "" {
-			targetID = version.BranchID
-		}
-		if version.ResumeID == "" {
-			version.ResumeID = targetID
-		}
-		if version.BranchID == "" {
-			version.BranchID = targetID
-		}
 		if version.UserID == "" && targetID != "" {
-			var b core.Branch
+			var b branchRecord
 			if err := tx.Where("id = ?", targetID).Select("user_id").First(&b).Error; err == nil {
 				version.UserID = b.UserID
 			}
@@ -148,85 +373,71 @@ func (r *branchRepository) CreateVersion(ctx context.Context, version *core.Bran
 			version.CreatedAt = time.Now().UTC()
 		}
 
-		return tx.Create(version).Error
+		return tx.Create(toBranchVersionRecord(version)).Error
 	})
 }
 
-func syncVersionIDs(v *core.BranchVersion) {
-	if v == nil {
-		return
-	}
-	if v.ResumeID == "" && v.BranchID != "" {
-		v.ResumeID = v.BranchID
-	}
-	if v.BranchID == "" && v.ResumeID != "" {
-		v.BranchID = v.ResumeID
-	}
-}
-
-// GetVersion retrieves a branch version by version UUID, optionally restricted to a specific branch.
-func (r *branchRepository) GetVersion(ctx context.Context, branchID, versionID string) (*core.BranchVersion, error) {
-	var version core.BranchVersion
-	query := r.db.WithContext(ctx).Where("id = ?", versionID)
+// Version retrieves a branch version by version UUID, optionally restricted to a specific branch.
+func (s *BranchStore) Version(ctx context.Context, branchID, versionID string) (*core.BranchVersion, error) {
+	var rec branchVersionRecord
+	query := s.db.WithContext(ctx).Where("id = ?", versionID)
 	if branchID != "" {
 		query = query.Where("resume_id = ? OR branch_id = ?", branchID, branchID)
 	}
-	err := query.First(&version).Error
-	if err != nil {
+	if err := query.First(&rec).Error; err != nil {
 		return nil, mapError(err)
 	}
-	syncVersionIDs(&version)
-	return &version, nil
+	return toCoreBranchVersion(&rec), nil
 }
 
-// GetVersionByNumber retrieves a branch version by its sequential number within the branch.
-func (r *branchRepository) GetVersionByNumber(ctx context.Context, branchID string, versionNumber int) (*core.BranchVersion, error) {
-	var version core.BranchVersion
-	err := r.db.WithContext(ctx).
+// VersionByNumber retrieves a branch version by its sequential number within the branch.
+func (s *BranchStore) VersionByNumber(ctx context.Context, branchID string, versionNumber int) (*core.BranchVersion, error) {
+	var rec branchVersionRecord
+	err := s.db.WithContext(ctx).
 		Where("(resume_id = ? OR branch_id = ?) AND version_number = ?", branchID, branchID, versionNumber).
-		First(&version).Error
+		First(&rec).Error
 	if err != nil {
 		return nil, mapError(err)
 	}
-	syncVersionIDs(&version)
-	return &version, nil
+	return toCoreBranchVersion(&rec), nil
 }
 
-// GetVersionsByIDs retrieves multiple branch versions by their IDs in a single batch query.
-func (r *branchRepository) GetVersionsByIDs(ctx context.Context, versionIDs []string) ([]core.BranchVersion, error) {
+// VersionsByIDs retrieves multiple branch versions by their IDs in a single batch query.
+func (s *BranchStore) VersionsByIDs(ctx context.Context, versionIDs []string) ([]core.BranchVersion, error) {
 	if len(versionIDs) == 0 {
 		return nil, nil
 	}
-	var versions []core.BranchVersion
-	err := r.db.WithContext(ctx).
+	var records []branchVersionRecord
+	if err := s.db.WithContext(ctx).
 		Where("id IN ?", versionIDs).
-		Find(&versions).Error
-	if err != nil {
+		Find(&records).Error; err != nil {
 		return nil, mapError(err)
 	}
-	for i := range versions {
-		syncVersionIDs(&versions[i])
+	versions := make([]core.BranchVersion, len(records))
+	for i := range records {
+		versions[i] = *toCoreBranchVersion(&records[i])
 	}
 	return versions, nil
 }
 
 // ListVersions returns all versions belonging to a branch ordered by version number ascending.
-func (r *branchRepository) ListVersions(ctx context.Context, branchID string) ([]core.BranchVersion, error) {
-	var versions []core.BranchVersion
-	err := r.db.WithContext(ctx).
+func (s *BranchStore) ListVersions(ctx context.Context, branchID string) ([]core.BranchVersion, error) {
+	var records []branchVersionRecord
+	if err := s.db.WithContext(ctx).
 		Where("resume_id = ? OR branch_id = ?", branchID, branchID).
 		Order("version_number ASC").
-		Find(&versions).Error
-	if err == nil {
-		for i := range versions {
-			syncVersionIDs(&versions[i])
-		}
+		Find(&records).Error; err != nil {
+		return nil, mapError(err)
 	}
-	return versions, mapError(err)
+	versions := make([]core.BranchVersion, len(records))
+	for i := range records {
+		versions[i] = *toCoreBranchVersion(&records[i])
+	}
+	return versions, nil
 }
 
 // UpdateVersionStatus updates status and error diagnostic message for a version.
-func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID string, status core.VersionStatus, errMsg string) error {
+func (s *BranchStore) UpdateVersionStatus(ctx context.Context, versionID string, status core.VersionStatus, errMsg string) error {
 	updates := map[string]any{
 		"status":        status,
 		"error_message": errMsg,
@@ -235,7 +446,7 @@ func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID st
 		now := time.Now().UTC()
 		updates["completed_at"] = &now
 	}
-	res := r.db.WithContext(ctx).Model(&core.BranchVersion{}).Where("id = ?", versionID).Updates(updates)
+	res := s.db.WithContext(ctx).Model(&branchVersionRecord{}).Where("id = ?", versionID).Updates(updates)
 	if res.Error != nil {
 		return mapError(res.Error)
 	}
@@ -246,25 +457,20 @@ func (r *branchRepository) UpdateVersionStatus(ctx context.Context, versionID st
 }
 
 // CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_main_revision.
-func (r *branchRepository) CompleteVersion(ctx context.Context, version *core.BranchVersion) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+func (s *BranchStore) CompleteVersion(ctx context.Context, version *core.BranchVersion) error {
+	if version == nil {
+		return core.ErrValidation
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_ = version.Normalize()
 		parentID := version.ResumeID
-		if parentID == "" {
-			parentID = version.BranchID
-		}
-		if version.ResumeID == "" {
-			version.ResumeID = parentID
-		}
-		if version.BranchID == "" {
-			version.BranchID = parentID
-		}
 
 		now := time.Now().UTC()
 		version.CompletedAt = &now
 		if version.Status == "" {
 			version.Status = core.VersionStatusCompleted
 		}
-		if err := tx.Save(version).Error; err != nil {
+		if err := tx.Save(toBranchVersionRecord(version)).Error; err != nil {
 			return err
 		}
 
@@ -294,16 +500,16 @@ func (r *branchRepository) CompleteVersion(ctx context.Context, version *core.Br
 			updates["ats_score"] = nil
 		}
 
-		return tx.Model(&core.Branch{}).
+		return tx.Model(&branchRecord{}).
 			Where("id = ?", parentID).
 			Updates(updates).Error
 	})
 }
 
 // UpdateVersionATSScore persists an ATS score evaluation on a branch version and propagates it to the parent branch if that version is currently active.
-func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID string, atsScore *core.ATSScore) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var version core.BranchVersion
+func (s *BranchStore) UpdateVersionATSScore(ctx context.Context, versionID string, atsScore *core.ATSScore) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var version branchVersionRecord
 		if err := tx.Where("id = ?", versionID).First(&version).Error; err != nil {
 			return mapError(err)
 		}
@@ -319,7 +525,7 @@ func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID 
 				return fmt.Errorf("failed to marshal ats score: %w", err)
 			}
 			serialized = string(raw)
-			res := tx.Model(&core.BranchVersion{}).
+			res := tx.Model(&branchVersionRecord{}).
 				Where("id = ? AND ats_score IS NULL", versionID).
 				Update("ats_score", serialized)
 			if res.Error != nil {
@@ -329,7 +535,7 @@ func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID 
 				return fmt.Errorf("%w: ATS score already exists for version %s", core.ErrConflict, versionID)
 			}
 		} else {
-			if err := tx.Model(&core.BranchVersion{}).Where("id = ?", versionID).Update("ats_score", nil).Error; err != nil {
+			if err := tx.Model(&branchVersionRecord{}).Where("id = ?", versionID).Update("ats_score", nil).Error; err != nil {
 				return mapError(err)
 			}
 		}
@@ -339,7 +545,7 @@ func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID 
 			parentID = version.BranchID
 		}
 		if parentID != "" {
-			if err := tx.Model(&core.Branch{}).
+			if err := tx.Model(&branchRecord{}).
 				Where("id = ? AND active_version_id = ?", parentID, versionID).
 				Updates(map[string]any{
 					"ats_score":  serialized,
@@ -354,10 +560,10 @@ func (r *branchRepository) UpdateVersionATSScore(ctx context.Context, versionID 
 }
 
 // FailInterruptedVersions transitions in-flight pending and processing versions to failed status on recovery.
-func (r *branchRepository) FailInterruptedVersions(ctx context.Context, reason string) error {
+func (s *BranchStore) FailInterruptedVersions(ctx context.Context, reason string) error {
 	now := time.Now().UTC()
-	return r.db.WithContext(ctx).
-		Model(&core.BranchVersion{}).
+	return s.db.WithContext(ctx).
+		Model(&branchVersionRecord{}).
 		Where("status IN ?", []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing}).
 		Updates(map[string]any{
 			"status":        core.VersionStatusFailed,
