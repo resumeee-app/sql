@@ -14,15 +14,12 @@ import (
 	"github.com/resumeee-app/resumeee-core"
 )
 
-type testStores struct {
-	profiles  core.ProfileStore
-	career    core.CareerStore
-	presets   core.PresetStore
-	templates core.TemplateStore
-	branches  core.BranchStore
-}
-
-func setupTestDB(t *testing.T) testStores {
+func setupTestDB(t *testing.T) (
+	core.ProfileRepository,
+	core.PresetRepository,
+	core.TemplateRepository,
+	core.BranchRepository,
+) {
 	t.Helper()
 	// Using shared cache memory database for tests
 	db, err := New("file::memory:?cache=shared")
@@ -30,13 +27,12 @@ func setupTestDB(t *testing.T) testStores {
 		t.Fatalf("failed to open test sqlite db: %v", err)
 	}
 
-	return testStores{
-		profiles:  NewProfileStore(db),
-		career:    NewCareerStore(db),
-		presets:   NewPresetStore(db),
-		templates: NewTemplateStore(db),
-		branches:  NewBranchStore(db),
-	}
+	profileRepo := NewProfileRepository(db)
+	presetRepo := NewPresetRepository(db)
+	templateRepo := NewTemplateRepository(db)
+	branchRepo := NewBranchRepository(db)
+
+	return profileRepo, presetRepo, templateRepo, branchRepo
 }
 
 func TestDB_Initialization(t *testing.T) {
@@ -60,10 +56,9 @@ func TestDB_Initialization(t *testing.T) {
 	}
 }
 
-func TestProfileStore_MainRevisionIncrements(t *testing.T) {
+func TestProfileRepository_MainRevisionIncrements(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo, careerRepo := stores.profiles, stores.career
+	profileRepo, _, _, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-%d", time.Now().UnixNano())
 
@@ -78,7 +73,7 @@ func TestProfileStore_MainRevisionIncrements(t *testing.T) {
 		t.Fatalf("failed to upsert profile: %v", err)
 	}
 
-	p, err := profileRepo.Profile(ctx, userID)
+	p, err := profileRepo.GetProfile(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get profile: %v", err)
 	}
@@ -91,7 +86,7 @@ func TestProfileStore_MainRevisionIncrements(t *testing.T) {
 	if err := profileRepo.UpsertProfile(ctx, p); err != nil {
 		t.Fatalf("failed to update profile: %v", err)
 	}
-	p, _ = profileRepo.Profile(ctx, userID)
+	p, _ = profileRepo.GetProfile(ctx, userID)
 	if p.MainRevision != 2 {
 		t.Errorf("expected MainRevision=2 after profile update, got %d", p.MainRevision)
 	}
@@ -103,10 +98,10 @@ func TestProfileStore_MainRevisionIncrements(t *testing.T) {
 		Name:     "Go",
 		Category: "Languages",
 	}
-	if err := careerRepo.CreateSkill(ctx, skill); err != nil {
+	if err := profileRepo.CreateSkill(ctx, skill); err != nil {
 		t.Fatalf("failed to create skill: %v", err)
 	}
-	p, _ = profileRepo.Profile(ctx, userID)
+	p, _ = profileRepo.GetProfile(ctx, userID)
 	if p.MainRevision != 3 {
 		t.Errorf("expected MainRevision=3 after CreateSkill, got %d", p.MainRevision)
 	}
@@ -122,10 +117,10 @@ func TestProfileStore_MainRevisionIncrements(t *testing.T) {
 		Skills:         []core.Skill{*skill},
 		CompanyContact: &core.ContactDetail{Type: core.ContactTypeEmail, Value: "hr@acme.com"},
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience: %v", err)
 	}
-	p, _ = profileRepo.Profile(ctx, userID)
+	p, _ = profileRepo.GetProfile(ctx, userID)
 	if p.MainRevision != 4 {
 		t.Errorf("expected MainRevision=4 after CreateExperience, got %d", p.MainRevision)
 	}
@@ -140,28 +135,27 @@ func TestProfileStore_MainRevisionIncrements(t *testing.T) {
 		Impact:    "45% p99 latency reduction across 12 services",
 		Skills:    []core.Skill{*skill},
 	}
-	if err := careerRepo.CreateFact(ctx, fact); err != nil {
+	if err := profileRepo.CreateFact(ctx, fact); err != nil {
 		t.Fatalf("failed to create fact: %v", err)
 	}
-	p, _ = profileRepo.Profile(ctx, userID)
+	p, _ = profileRepo.GetProfile(ctx, userID)
 	if p.MainRevision != 5 {
 		t.Errorf("expected MainRevision=5 after CreateFact, got %d", p.MainRevision)
 	}
 
 	// 6. Delete Experience increments revision
-	if err := careerRepo.DeleteExperience(ctx, userID, exp.ID); err != nil {
+	if err := profileRepo.DeleteExperience(ctx, userID, exp.ID); err != nil {
 		t.Fatalf("failed to delete experience: %v", err)
 	}
-	p, _ = profileRepo.Profile(ctx, userID)
+	p, _ = profileRepo.GetProfile(ctx, userID)
 	if p.MainRevision != 6 {
 		t.Errorf("expected MainRevision=6 after DeleteExperience, got %d", p.MainRevision)
 	}
 }
 
-func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
+func TestProfileRepository_PolymorphicFactsAndSnapshot(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo, careerRepo := stores.profiles, stores.career
+	profileRepo, _, _, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-snapshot-%d", time.Now().UnixNano())
 
@@ -177,10 +171,10 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 	// Skill
 	skillGo := core.Skill{ID: "sk-go", UserID: userID, Name: "Go"}
 	skillGorm := core.Skill{ID: "sk-gorm", UserID: userID, Name: "GORM"}
-	if err := careerRepo.CreateSkill(ctx, &skillGo); err != nil {
+	if err := profileRepo.CreateSkill(ctx, &skillGo); err != nil {
 		t.Fatalf("failed to create skillGo: %v", err)
 	}
-	if err := careerRepo.CreateSkill(ctx, &skillGorm); err != nil {
+	if err := profileRepo.CreateSkill(ctx, &skillGorm); err != nil {
 		t.Fatalf("failed to create skillGorm: %v", err)
 	}
 
@@ -193,7 +187,7 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		StartDate: core.NewDate(2023, 1, 1),
 		Skills:    []core.Skill{skillGo, skillGorm},
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience: %v", err)
 	}
 
@@ -205,7 +199,7 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		Statement: "Built high throughput pipeline",
 		Skills:    []core.Skill{skillGo},
 	}
-	if err := careerRepo.CreateFact(ctx, expFact); err != nil {
+	if err := profileRepo.CreateFact(ctx, expFact); err != nil {
 		t.Fatalf("failed to create expFact: %v", err)
 	}
 
@@ -217,7 +211,7 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		StartDate: core.DatePtr(core.NewDate(2024, 1, 1)),
 		Skills:    []core.Skill{skillGo},
 	}
-	if err := careerRepo.CreateProject(ctx, proj); err != nil {
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
 		t.Fatalf("failed to create project: %v", err)
 	}
 
@@ -229,7 +223,7 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		Statement: "Created zero-dependency SQLite backend",
 		Skills:    []core.Skill{skillGo, skillGorm},
 	}
-	if err := careerRepo.CreateFact(ctx, projFact); err != nil {
+	if err := profileRepo.CreateFact(ctx, projFact); err != nil {
 		t.Fatalf("failed to create projFact: %v", err)
 	}
 
@@ -241,7 +235,7 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		Degree:      "B.S.",
 		Field:       "Computer Science",
 	}
-	if err := careerRepo.CreateEducation(ctx, edu); err != nil {
+	if err := profileRepo.CreateEducation(ctx, edu); err != nil {
 		t.Fatalf("failed to create education: %v", err)
 	}
 
@@ -252,12 +246,12 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 		OwnerType: core.OwnerTypeEducation,
 		Statement: "Graduated with honors",
 	}
-	if err := careerRepo.CreateFact(ctx, eduFact); err != nil {
+	if err := profileRepo.CreateFact(ctx, eduFact); err != nil {
 		t.Fatalf("failed to create eduFact: %v", err)
 	}
 
 	// Verify Aggregate Snapshot
-	snap, err := profileRepo.Snapshot(ctx, userID)
+	snap, err := profileRepo.GetSnapshot(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get snapshot: %v", err)
 	}
@@ -279,10 +273,9 @@ func TestProfileStore_PolymorphicFactsAndSnapshot(t *testing.T) {
 	}
 }
 
-func TestBranchStore_SequentialVersionsAndRecovery(t *testing.T) {
+func TestBranchRepository_SequentialVersionsAndRecovery(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	branchRepo := stores.branches
+	_, _, _, branchRepo := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-branch-%d", time.Now().UnixNano())
 
@@ -374,7 +367,7 @@ func TestBranchStore_SequentialVersionsAndRecovery(t *testing.T) {
 		t.Fatalf("failed to execute FailInterruptedVersions: %v", err)
 	}
 
-	updatedV1, err := branchRepo.Version(ctx, branch.ID, "v-1")
+	updatedV1, err := branchRepo.GetVersion(ctx, branch.ID, "v-1")
 	if err != nil {
 		t.Fatalf("failed to get v-1: %v", err)
 	}
@@ -388,8 +381,7 @@ func TestBranchStore_SequentialVersionsAndRecovery(t *testing.T) {
 
 func TestPresetAndTemplateRepositories(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	presetRepo, templateRepo := stores.presets, stores.templates
+	_, presetRepo, templateRepo, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-config-%d", time.Now().UnixNano())
 
@@ -406,7 +398,7 @@ func TestPresetAndTemplateRepositories(t *testing.T) {
 		t.Fatalf("failed to create template: %v", err)
 	}
 
-	gotTmpl, err := templateRepo.Template(ctx, userID, tmpl.ID)
+	gotTmpl, err := templateRepo.GetTemplate(ctx, userID, tmpl.ID)
 	if err != nil {
 		t.Fatalf("failed to get template: %v", err)
 	}
@@ -426,7 +418,7 @@ func TestPresetAndTemplateRepositories(t *testing.T) {
 		t.Fatalf("failed to create preset: %v", err)
 	}
 
-	gotPreset, err := presetRepo.Preset(ctx, userID, preset.ID)
+	gotPreset, err := presetRepo.GetPreset(ctx, userID, preset.ID)
 	if err != nil {
 		t.Fatalf("failed to get preset: %v", err)
 	}
@@ -449,7 +441,7 @@ func TestPresetAndTemplateRepositories(t *testing.T) {
 	if err := presetRepo.CreatePreset(ctx, presetES); err != nil {
 		t.Fatalf("failed to create Spanish preset: %v", err)
 	}
-	gotPresetES, err := presetRepo.Preset(ctx, userID, presetES.ID)
+	gotPresetES, err := presetRepo.GetPreset(ctx, userID, presetES.ID)
 	if err != nil {
 		t.Fatalf("failed to get Spanish preset: %v", err)
 	}
@@ -458,16 +450,15 @@ func TestPresetAndTemplateRepositories(t *testing.T) {
 	}
 
 	// Verify NotFound mapping
-	_, err = presetRepo.Preset(ctx, userID, "non-existent")
+	_, err = presetRepo.GetPreset(ctx, userID, "non-existent")
 	if !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for non-existent preset, got %v", err)
 	}
 }
 
-func TestProfileStore_ReplaceCareerGraph(t *testing.T) {
+func TestProfileRepository_ReplaceCareerGraph(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo := stores.profiles
+	profileRepo, _, _, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-replace-%d", time.Now().UnixNano())
 
@@ -522,7 +513,7 @@ func TestProfileStore_ReplaceCareerGraph(t *testing.T) {
 		t.Fatalf("failed to replace career graph: %v", err)
 	}
 
-	snapAfter, err := profileRepo.Snapshot(ctx, userID)
+	snapAfter, err := profileRepo.GetSnapshot(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get snapshot after replace: %v", err)
 	}
@@ -538,10 +529,9 @@ func TestProfileStore_ReplaceCareerGraph(t *testing.T) {
 	}
 }
 
-func TestProfileStore_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
+func TestProfileRepository_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo := stores.profiles
+	profileRepo, _, _, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-replace-nested-%d", time.Now().UnixNano())
 
@@ -594,7 +584,7 @@ func TestProfileStore_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 		t.Fatalf("failed to replace career graph with nested skills: %v", err)
 	}
 
-	snapAfter, err := profileRepo.Snapshot(ctx, userID)
+	snapAfter, err := profileRepo.GetSnapshot(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get snapshot: %v", err)
 	}
@@ -626,10 +616,9 @@ func TestProfileStore_ReplaceCareerGraph_WithNestedSkills(t *testing.T) {
 	}
 }
 
-func TestBranchStore_LifecycleAndActiveVersion(t *testing.T) {
+func TestBranchRepository_LifecycleAndActiveVersion(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo, branchRepo := stores.profiles, stores.branches
+	profileRepo, _, _, branchRepo := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-branch-life-%d", time.Now().UnixNano())
 
@@ -653,7 +642,7 @@ func TestBranchStore_LifecycleAndActiveVersion(t *testing.T) {
 	}
 
 	// Verify staleness is true since LastSyncedMainRevision=0 < Profile.MainRevision=5
-	fetchedBranch, err := branchRepo.Branch(ctx, userID, b.ID)
+	fetchedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
 	if err != nil {
 		t.Fatalf("failed to get branch: %v", err)
 	}
@@ -680,7 +669,7 @@ func TestBranchStore_LifecycleAndActiveVersion(t *testing.T) {
 	}
 
 	// Check Branch updated
-	updatedBranch, err := branchRepo.Branch(ctx, userID, b.ID)
+	updatedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
 	if err != nil {
 		t.Fatalf("failed to get updated branch: %v", err)
 	}
@@ -694,8 +683,8 @@ func TestBranchStore_LifecycleAndActiveVersion(t *testing.T) {
 		t.Errorf("expected branch to NOT be stale once synced with revision 5")
 	}
 
-	// Test VersionByNumber
-	vByNum, err := branchRepo.VersionByNumber(ctx, b.ID, 1)
+	// Test GetVersionByNumber
+	vByNum, err := branchRepo.GetVersionByNumber(ctx, b.ID, 1)
 	if err != nil {
 		t.Fatalf("failed to get version by number: %v", err)
 	}
@@ -707,16 +696,15 @@ func TestBranchStore_LifecycleAndActiveVersion(t *testing.T) {
 	if err := branchRepo.DeleteBranch(ctx, userID, b.ID); err != nil {
 		t.Fatalf("failed to delete branch: %v", err)
 	}
-	_, err = branchRepo.Branch(ctx, userID, b.ID)
+	_, err = branchRepo.GetBranch(ctx, userID, b.ID)
 	if !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after branch deletion, got %v", err)
 	}
 }
 
-func TestProfileStore_FullEntityCRUD(t *testing.T) {
+func TestProfileRepository_FullEntityCRUD(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo, careerRepo := stores.profiles, stores.career
+	profileRepo, _, _, _ := setupTestDB(t)
 	userID := fmt.Sprintf("user-crud-%d", time.Now().UnixNano())
 
 	// Initialize Profile
@@ -737,97 +725,97 @@ func TestProfileStore_FullEntityCRUD(t *testing.T) {
 
 	// 2. Skill CRUD
 	sk := &core.Skill{ID: "sk-c", UserID: userID, Name: "Docker"}
-	if err := careerRepo.CreateSkill(ctx, sk); err != nil {
+	if err := profileRepo.CreateSkill(ctx, sk); err != nil {
 		t.Fatalf("create skill failed: %v", err)
 	}
-	skills, err := careerRepo.ListSkills(ctx, userID)
+	skills, err := profileRepo.ListSkills(ctx, userID)
 	if err != nil || len(skills) != 1 {
 		t.Fatalf("list skills failed: %v, len=%d", err, len(skills))
 	}
-	fetchedSk, err := careerRepo.Skill(ctx, userID, sk.ID)
+	fetchedSk, err := profileRepo.GetSkill(ctx, userID, sk.ID)
 	if err != nil || fetchedSk.Name != "Docker" {
 		t.Fatalf("get skill failed: %v", err)
 	}
 	sk.Name = "Docker & Containers"
-	if err := careerRepo.UpdateSkill(ctx, sk); err != nil {
+	if err := profileRepo.UpdateSkill(ctx, sk); err != nil {
 		t.Fatalf("update skill failed: %v", err)
 	}
-	if err := careerRepo.DeleteSkill(ctx, userID, sk.ID); err != nil {
+	if err := profileRepo.DeleteSkill(ctx, userID, sk.ID); err != nil {
 		t.Fatalf("delete skill failed: %v", err)
 	}
-	if err := careerRepo.DeleteSkill(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
+	if err := profileRepo.DeleteSkill(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent skill, got %v", err)
 	}
 
 	// 3. Project CRUD
 	proj := &core.Project{ID: "proj-c", UserID: userID, Name: "Project C"}
-	if err := careerRepo.CreateProject(ctx, proj); err != nil {
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
 		t.Fatalf("create project failed: %v", err)
 	}
-	projs, err := careerRepo.ListProjects(ctx, userID)
+	projs, err := profileRepo.ListProjects(ctx, userID)
 	if err != nil || len(projs) != 1 {
 		t.Fatalf("list projects failed: %v, len=%d", err, len(projs))
 	}
-	fetchedProj, err := careerRepo.Project(ctx, userID, proj.ID)
+	fetchedProj, err := profileRepo.GetProject(ctx, userID, proj.ID)
 	if err != nil || fetchedProj.Name != "Project C" {
 		t.Fatalf("get project failed: %v", err)
 	}
 	proj.Name = "Project C Updated"
-	if err := careerRepo.UpdateProject(ctx, proj); err != nil {
+	if err := profileRepo.UpdateProject(ctx, proj); err != nil {
 		t.Fatalf("update project failed: %v", err)
 	}
-	if err := careerRepo.DeleteProject(ctx, userID, proj.ID); err != nil {
+	if err := profileRepo.DeleteProject(ctx, userID, proj.ID); err != nil {
 		t.Fatalf("delete project failed: %v", err)
 	}
-	if err := careerRepo.DeleteProject(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
+	if err := profileRepo.DeleteProject(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent project, got %v", err)
 	}
 
 	// 4. Education CRUD
 	edu := &core.Education{ID: "edu-c", UserID: userID, Institution: "State College"}
-	if err := careerRepo.CreateEducation(ctx, edu); err != nil {
+	if err := profileRepo.CreateEducation(ctx, edu); err != nil {
 		t.Fatalf("create edu failed: %v", err)
 	}
-	edus, err := careerRepo.ListEducation(ctx, userID)
+	edus, err := profileRepo.ListEducation(ctx, userID)
 	if err != nil || len(edus) != 1 {
 		t.Fatalf("list edus failed: %v, len=%d", err, len(edus))
 	}
-	fetchedEdu, err := careerRepo.Education(ctx, userID, edu.ID)
+	fetchedEdu, err := profileRepo.GetEducation(ctx, userID, edu.ID)
 	if err != nil || fetchedEdu.Institution != "State College" {
 		t.Fatalf("get edu failed: %v", err)
 	}
 	edu.Institution = "State University"
-	if err := careerRepo.UpdateEducation(ctx, edu); err != nil {
+	if err := profileRepo.UpdateEducation(ctx, edu); err != nil {
 		t.Fatalf("update edu failed: %v", err)
 	}
-	if err := careerRepo.DeleteEducation(ctx, userID, edu.ID); err != nil {
+	if err := profileRepo.DeleteEducation(ctx, userID, edu.ID); err != nil {
 		t.Fatalf("delete edu failed: %v", err)
 	}
-	if err := careerRepo.DeleteEducation(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
+	if err := profileRepo.DeleteEducation(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent edu, got %v", err)
 	}
 
 	// 5. Certification CRUD
 	cert := &core.Certification{ID: "cert-c", UserID: userID, Name: "AWS SAA"}
-	if err := careerRepo.CreateCertification(ctx, cert); err != nil {
+	if err := profileRepo.CreateCertification(ctx, cert); err != nil {
 		t.Fatalf("create cert failed: %v", err)
 	}
-	certs, err := careerRepo.ListCertifications(ctx, userID)
+	certs, err := profileRepo.ListCertifications(ctx, userID)
 	if err != nil || len(certs) != 1 {
 		t.Fatalf("list certs failed: %v, len=%d", err, len(certs))
 	}
-	fetchedCert, err := careerRepo.Certification(ctx, userID, cert.ID)
+	fetchedCert, err := profileRepo.GetCertification(ctx, userID, cert.ID)
 	if err != nil || fetchedCert.Name != "AWS SAA" {
 		t.Fatalf("get cert failed: %v", err)
 	}
 	cert.Name = "AWS Solutions Architect Associate"
-	if err := careerRepo.UpdateCertification(ctx, cert); err != nil {
+	if err := profileRepo.UpdateCertification(ctx, cert); err != nil {
 		t.Fatalf("update cert failed: %v", err)
 	}
-	if err := careerRepo.DeleteCertification(ctx, userID, cert.ID); err != nil {
+	if err := profileRepo.DeleteCertification(ctx, userID, cert.ID); err != nil {
 		t.Fatalf("delete cert failed: %v", err)
 	}
-	if err := careerRepo.DeleteCertification(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
+	if err := profileRepo.DeleteCertification(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent cert, got %v", err)
 	}
 
@@ -839,19 +827,19 @@ func TestProfileStore_FullEntityCRUD(t *testing.T) {
 		RoleTitle: "Engineer",
 		StartDate: core.NewDate(2021, 1, 1),
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("create exp failed: %v", err)
 	}
-	exps, err := careerRepo.ListExperiences(ctx, userID)
+	exps, err := profileRepo.ListExperiences(ctx, userID)
 	if err != nil || len(exps) != 1 {
 		t.Fatalf("list exps failed: %v, len=%d", err, len(exps))
 	}
-	fetchedExp, err := careerRepo.Experience(ctx, userID, exp.ID)
+	fetchedExp, err := profileRepo.GetExperience(ctx, userID, exp.ID)
 	if err != nil || fetchedExp.Company != "Startup Labs" {
 		t.Fatalf("get exp failed: %v", err)
 	}
 	exp.RoleTitle = "Senior Engineer"
-	if err := careerRepo.UpdateExperience(ctx, exp); err != nil {
+	if err := profileRepo.UpdateExperience(ctx, exp); err != nil {
 		t.Fatalf("update exp failed: %v", err)
 	}
 
@@ -862,34 +850,33 @@ func TestProfileStore_FullEntityCRUD(t *testing.T) {
 		OwnerType: core.OwnerTypeWorkExperience,
 		Statement: "Optimized DB queries",
 	}
-	if err := careerRepo.CreateFact(ctx, fact); err != nil {
+	if err := profileRepo.CreateFact(ctx, fact); err != nil {
 		t.Fatalf("create fact failed: %v", err)
 	}
-	facts, err := careerRepo.ListFactsByOwner(ctx, userID, string(core.OwnerTypeWorkExperience), exp.ID)
+	facts, err := profileRepo.ListFactsByOwner(ctx, userID, string(core.OwnerTypeWorkExperience), exp.ID)
 	if err != nil || len(facts) != 1 {
 		t.Fatalf("list facts failed: %v, len=%d", err, len(facts))
 	}
-	fetchedFact, err := careerRepo.Fact(ctx, userID, fact.ID)
+	fetchedFact, err := profileRepo.GetFact(ctx, userID, fact.ID)
 	if err != nil || fetchedFact.Statement != "Optimized DB queries" {
 		t.Fatalf("get fact failed: %v", err)
 	}
 	fact.Statement = "Optimized SQLite indexes"
-	if err := careerRepo.UpdateFact(ctx, fact); err != nil {
+	if err := profileRepo.UpdateFact(ctx, fact); err != nil {
 		t.Fatalf("update fact failed: %v", err)
 	}
-	if err := careerRepo.DeleteFact(ctx, userID, fact.ID); err != nil {
+	if err := profileRepo.DeleteFact(ctx, userID, fact.ID); err != nil {
 		t.Fatalf("delete fact failed: %v", err)
 	}
-	if err := careerRepo.DeleteFact(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
+	if err := profileRepo.DeleteFact(ctx, userID, "non-existent"); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound deleting non-existent fact, got %v", err)
 	}
-	_ = careerRepo.DeleteExperience(ctx, userID, exp.ID)
+	_ = profileRepo.DeleteExperience(ctx, userID, exp.ID)
 }
 
 func TestPresetTemplateBranch_ExtendedCRUD(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	presetRepo, templateRepo, branchRepo := stores.presets, stores.templates, stores.branches
+	_, presetRepo, templateRepo, branchRepo := setupTestDB(t)
 	userID := fmt.Sprintf("user-ext-%d", time.Now().UnixNano())
 
 	// Preset
@@ -972,10 +959,9 @@ func TestPresetTemplateBranch_ExtendedCRUD(t *testing.T) {
 	}
 }
 
-func TestTemplateStore_SecurityAndSanitization(t *testing.T) {
+func TestTemplateRepository_SecurityAndSanitization(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	templateRepo := stores.templates
+	_, _, templateRepo, _ := setupTestDB(t)
 	userID := fmt.Sprintf("user-sec-%d", time.Now().UnixNano())
 
 	validator := core.DefaultTemplateValidator{}
@@ -1054,10 +1040,9 @@ func testRenderHTML(tmplStr string, data any) (string, error) {
 	return buf.String(), nil
 }
 
-func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
+func TestBranchRepository_VersionCompositeUniqueConstraint(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	branchRepo := stores.branches
+	_, _, _, branchRepo := setupTestDB(t)
 
 	db, err := New("file:unique_test?mode=memory&cache=shared")
 	if err != nil {
@@ -1071,7 +1056,7 @@ func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
 		Name:          "Unique Test Branch",
 		TemplateSetID: "tmpl-1",
 	}
-	if err := db.WithContext(ctx).Create(toBranchRecord(b)).Error; err != nil {
+	if err := db.WithContext(ctx).Create(b).Error; err != nil {
 		t.Fatalf("failed to create branch: %v", err)
 	}
 
@@ -1081,7 +1066,7 @@ func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
 		VersionNumber: 1,
 		Status:        core.VersionStatusCompleted,
 	}
-	if err := db.WithContext(ctx).Create(toBranchVersionRecord(v1)).Error; err != nil {
+	if err := db.WithContext(ctx).Create(v1).Error; err != nil {
 		t.Fatalf("failed to create first version: %v", err)
 	}
 
@@ -1092,7 +1077,7 @@ func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
 		VersionNumber: 1,
 		Status:        core.VersionStatusCompleted,
 	}
-	if err := db.WithContext(ctx).Create(toBranchVersionRecord(vDuplicate)).Error; err == nil {
+	if err := db.WithContext(ctx).Create(vDuplicate).Error; err == nil {
 		t.Fatalf("expected unique constraint violation on duplicate (branch_id, version_number), got nil")
 	}
 
@@ -1104,7 +1089,7 @@ func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
 		Name:          "Unique Test Branch 2",
 		TemplateSetID: "tmpl-1",
 	}
-	if err := db.WithContext(ctx).Create(toBranchRecord(b2)).Error; err != nil {
+	if err := db.WithContext(ctx).Create(b2).Error; err != nil {
 		t.Fatalf("failed to create branch 2: %v", err)
 	}
 
@@ -1114,25 +1099,24 @@ func TestBranchStore_VersionCompositeUniqueConstraint(t *testing.T) {
 		VersionNumber: 1,
 		Status:        core.VersionStatusCompleted,
 	}
-	if err := db.WithContext(ctx).Create(toBranchVersionRecord(vDiffBranch)).Error; err != nil {
+	if err := db.WithContext(ctx).Create(vDiffBranch).Error; err != nil {
 		t.Fatalf("expected version_number 1 on different branch to succeed, got: %v", err)
 	}
 	_ = branchRepo
 }
 
-func TestProfileStore_AssociationSkillsPurge(t *testing.T) {
+func TestProfileRepository_AssociationSkillsPurge(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	careerRepo := stores.career
+	profileRepo, _, _, _ := setupTestDB(t)
 	userID := fmt.Sprintf("user-purge-%d", time.Now().UnixNano())
 
 	// Create 3 skills
 	s1 := &core.Skill{ID: fmt.Sprintf("s1-%d", time.Now().UnixNano()), UserID: userID, Name: "Go"}
 	s2 := &core.Skill{ID: fmt.Sprintf("s2-%d", time.Now().UnixNano()), UserID: userID, Name: "Rust"}
 	s3 := &core.Skill{ID: fmt.Sprintf("s3-%d", time.Now().UnixNano()), UserID: userID, Name: "Python"}
-	_ = careerRepo.CreateSkill(ctx, s1)
-	_ = careerRepo.CreateSkill(ctx, s2)
-	_ = careerRepo.CreateSkill(ctx, s3)
+	_ = profileRepo.CreateSkill(ctx, s1)
+	_ = profileRepo.CreateSkill(ctx, s2)
+	_ = profileRepo.CreateSkill(ctx, s3)
 
 	// Create Experience with 3 skills
 	exp := &core.WorkExperience{
@@ -1143,11 +1127,11 @@ func TestProfileStore_AssociationSkillsPurge(t *testing.T) {
 		StartDate: core.NewDate(2020, 1, 1),
 		Skills:    []core.Skill{*s1, *s2, *s3},
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience: %v", err)
 	}
 
-	fetched, err := careerRepo.Experience(ctx, userID, exp.ID)
+	fetched, err := profileRepo.GetExperience(ctx, userID, exp.ID)
 	if err != nil {
 		t.Fatalf("failed to get experience: %v", err)
 	}
@@ -1157,11 +1141,11 @@ func TestProfileStore_AssociationSkillsPurge(t *testing.T) {
 
 	// Update Experience to only have 1 skill (s1)
 	fetched.Skills = []core.Skill{*s1}
-	if err := careerRepo.UpdateExperience(ctx, fetched); err != nil {
+	if err := profileRepo.UpdateExperience(ctx, fetched); err != nil {
 		t.Fatalf("failed to update experience: %v", err)
 	}
 
-	refetched, err := careerRepo.Experience(ctx, userID, exp.ID)
+	refetched, err := profileRepo.GetExperience(ctx, userID, exp.ID)
 	if err != nil {
 		t.Fatalf("failed to refetch experience: %v", err)
 	}
@@ -1179,29 +1163,28 @@ func TestProfileStore_AssociationSkillsPurge(t *testing.T) {
 		Name:   "P1",
 		Skills: []core.Skill{*s1, *s2},
 	}
-	if err := careerRepo.CreateProject(ctx, proj); err != nil {
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
 		t.Fatalf("failed to create project: %v", err)
 	}
-	fetchedProj, _ := careerRepo.Project(ctx, userID, proj.ID)
+	fetchedProj, _ := profileRepo.GetProject(ctx, userID, proj.ID)
 	if len(fetchedProj.Skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d", len(fetchedProj.Skills))
 	}
 
 	// Update Project to have 0 skills
 	fetchedProj.Skills = []core.Skill{}
-	if err := careerRepo.UpdateProject(ctx, fetchedProj); err != nil {
+	if err := profileRepo.UpdateProject(ctx, fetchedProj); err != nil {
 		t.Fatalf("failed to update project: %v", err)
 	}
-	refetchedProj, _ := careerRepo.Project(ctx, userID, proj.ID)
+	refetchedProj, _ := profileRepo.GetProject(ctx, userID, proj.ID)
 	if len(refetchedProj.Skills) != 0 {
 		t.Errorf("expected 0 skills remaining on project, got %d", len(refetchedProj.Skills))
 	}
 }
 
-func TestProfileStore_SkillResolution(t *testing.T) {
+func TestProfileRepository_SkillResolution(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	profileRepo, careerRepo := stores.profiles, stores.career
+	profileRepo, _, _, _ := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-skills-%d", time.Now().UnixNano())
 	prof := &core.Profile{
@@ -1226,11 +1209,11 @@ func TestProfileStore_SkillResolution(t *testing.T) {
 			{Name: "Go"},
 		},
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience with raw skill names: %v", err)
 	}
 
-	fetchedExp, err := careerRepo.Experience(ctx, userID, exp.ID)
+	fetchedExp, err := profileRepo.GetExperience(ctx, userID, exp.ID)
 	if err != nil {
 		t.Fatalf("failed to get experience: %v", err)
 	}
@@ -1260,11 +1243,11 @@ func TestProfileStore_SkillResolution(t *testing.T) {
 			{Name: "Terraform"}, // new skill
 		},
 	}
-	if err := careerRepo.CreateProject(ctx, proj); err != nil {
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
 		t.Fatalf("failed to create project: %v", err)
 	}
 
-	fetchedProj, err := careerRepo.Project(ctx, userID, proj.ID)
+	fetchedProj, err := profileRepo.GetProject(ctx, userID, proj.ID)
 	if err != nil {
 		t.Fatalf("failed to get project: %v", err)
 	}
@@ -1272,8 +1255,8 @@ func TestProfileStore_SkillResolution(t *testing.T) {
 		t.Fatalf("expected 2 skills on project, got %d", len(fetchedProj.Skills))
 	}
 
-	// 3. Verify Snapshot consolidates skills and deduplicates
-	snap, err := profileRepo.Snapshot(ctx, userID)
+	// 3. Verify GetSnapshot consolidates skills and deduplicates
+	snap, err := profileRepo.GetSnapshot(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get snapshot: %v", err)
 	}
@@ -1315,18 +1298,18 @@ func TestDB_SecondaryAndJoinTableIndexes(t *testing.T) {
 	}
 }
 
-func TestQuotaStore_ReserveCommitRelease(t *testing.T) {
+func TestQuotaRepository_ReserveCommitRelease(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file:quota_test?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
 
-	quotaRepo := NewQuotaStore(db)
+	quotaRepo := NewQuotaRepository(db)
 	userID := "user-quota-1"
 
-	// 1. Initial Quota returns default limits
-	quota, err := quotaRepo.Quota(ctx, userID)
+	// 1. Initial GetQuota returns default limits
+	quota, err := quotaRepo.GetQuota(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get quota: %v", err)
 	}
@@ -1367,7 +1350,7 @@ func TestQuotaStore_ReserveCommitRelease(t *testing.T) {
 	}
 
 	// 7. Verify updated quota after release: 1 daily request used, tokens reconciled
-	quotaAfter, err := quotaRepo.Quota(ctx, userID)
+	quotaAfter, err := quotaRepo.GetQuota(ctx, userID)
 	if err != nil {
 		t.Fatalf("failed to get quota: %v", err)
 	}
@@ -1386,7 +1369,7 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 		t.Fatalf("failed to open database: %v", err)
 	}
 
-	careerRepo := NewCareerStore(db)
+	profileRepo := NewProfileRepository(db)
 	systemUserID := "system"
 	tenantUserID := "user-tenant-1"
 
@@ -1399,7 +1382,7 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 		Slug:     "rust",
 		IsGlobal: true,
 	}
-	if err := careerRepo.CreateSkill(ctx, globalSkill); err != nil {
+	if err := profileRepo.CreateSkill(ctx, globalSkill); err != nil {
 		t.Fatalf("failed to create global skill: %v", err)
 	}
 
@@ -1410,12 +1393,12 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 		Name:     "Python",
 		IsGlobal: true,
 	}
-	if err := careerRepo.CreateSkill(ctx, fakeGlobal); err == nil {
+	if err := profileRepo.CreateSkill(ctx, fakeGlobal); err == nil {
 		t.Fatal("expected error when tenant attempts to create global skill, got nil")
 	}
 
-	// 3. Tenant can see global skill in ListSkills and Skill
-	skills, err := careerRepo.ListSkills(ctx, tenantUserID)
+	// 3. Tenant can see global skill in ListSkills and GetSkill
+	skills, err := profileRepo.ListSkills(ctx, tenantUserID)
 	if err != nil {
 		t.Fatalf("failed to list skills: %v", err)
 	}
@@ -1430,7 +1413,7 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 		t.Errorf("expected global skill to be listed for tenant")
 	}
 
-	fetched, err := careerRepo.Skill(ctx, tenantUserID, globalSkill.ID)
+	fetched, err := profileRepo.GetSkill(ctx, tenantUserID, globalSkill.ID)
 	if err != nil {
 		t.Fatalf("failed to get global skill as tenant: %v", err)
 	}
@@ -1440,17 +1423,17 @@ func TestGlobalSkills_ImmutabilityAndAccess(t *testing.T) {
 
 	// 4. Tenant cannot update global skill
 	fetched.Name = "Rust 2024"
-	if err := careerRepo.UpdateSkill(ctx, fetched); !errors.Is(err, core.ErrGlobalSkillImmutable) {
+	if err := profileRepo.UpdateSkill(ctx, fetched); !errors.Is(err, core.ErrGlobalSkillImmutable) {
 		t.Fatalf("expected ErrGlobalSkillImmutable on update, got: %v", err)
 	}
 
 	// 5. Tenant cannot delete global skill
-	if err := careerRepo.DeleteSkill(ctx, tenantUserID, globalSkill.ID); !errors.Is(err, core.ErrGlobalSkillImmutable) {
+	if err := profileRepo.DeleteSkill(ctx, tenantUserID, globalSkill.ID); !errors.Is(err, core.ErrGlobalSkillImmutable) {
 		t.Fatalf("expected ErrGlobalSkillImmutable on delete, got: %v", err)
 	}
 }
 
-func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
+func TestProfileRepository_GlobalSkillResolutionInEntities(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file:global_skill_entities?mode=memory&cache=shared")
 	if err != nil {
@@ -1462,8 +1445,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 	}
 	defer func() { _ = sqlDB.Close() }()
 
-	careerRepo := NewCareerStore(db)
-	profileRepo := NewProfileStore(db)
+	profileRepo := NewProfileRepository(db)
 	systemUserID := "system"
 	tenantUserID := "tenant-456"
 
@@ -1478,7 +1460,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 		Category:    "Web Technologies",
 		Proficiency: "Proficient",
 	}
-	if err := careerRepo.CreateSkill(ctx, globalSkill); err != nil {
+	if err := profileRepo.CreateSkill(ctx, globalSkill); err != nil {
 		t.Fatalf("failed to create global skill: %v", err)
 	}
 
@@ -1493,7 +1475,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 			{ID: "global-skill-react"},
 		},
 	}
-	if err := careerRepo.CreateExperience(ctx, exp); err != nil {
+	if err := profileRepo.CreateExperience(ctx, exp); err != nil {
 		t.Fatalf("failed to create experience with global skill: %v", err)
 	}
 
@@ -1507,12 +1489,12 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 			{Name: "react"},
 		},
 	}
-	if err := careerRepo.CreateProject(ctx, proj); err != nil {
+	if err := profileRepo.CreateProject(ctx, proj); err != nil {
 		t.Fatalf("failed to create project with global skill: %v", err)
 	}
 
 	// 4. Retrieve created experience and verify skill linkage
-	fetchedExp, err := careerRepo.Experience(ctx, tenantUserID, exp.ID)
+	fetchedExp, err := profileRepo.GetExperience(ctx, tenantUserID, exp.ID)
 	if err != nil {
 		t.Fatalf("failed to get experience: %v", err)
 	}
@@ -1524,7 +1506,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 	}
 
 	// 5. Retrieve created project and verify skill linkage
-	fetchedProj, err := careerRepo.Project(ctx, tenantUserID, proj.ID)
+	fetchedProj, err := profileRepo.GetProject(ctx, tenantUserID, proj.ID)
 	if err != nil {
 		t.Fatalf("failed to get project: %v", err)
 	}
@@ -1536,7 +1518,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 	}
 
 	// 6. Verify tenant profile snapshot includes the global skill in ConsolidateSkills()
-	snap, err := profileRepo.Snapshot(ctx, tenantUserID)
+	snap, err := profileRepo.GetSnapshot(ctx, tenantUserID)
 	if err != nil {
 		t.Fatalf("failed to get snapshot: %v", err)
 	}
@@ -1552,7 +1534,7 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 	}
 
 	// 7. Verify no duplicate custom skill was created in tenant's custom skills
-	var customSkills []skillRecord
+	var customSkills []core.Skill
 	if err := db.Where("user_id = ? AND is_global = ?", tenantUserID, false).Find(&customSkills).Error; err != nil {
 		t.Fatalf("failed to query custom skills: %v", err)
 	}
@@ -1561,14 +1543,14 @@ func TestProfileStore_GlobalSkillResolutionInEntities(t *testing.T) {
 	}
 }
 
-func TestPDFParseJobStore_CleanupCompletedJobs(t *testing.T) {
+func TestPDFParseJobRepository_CleanupCompletedJobs(t *testing.T) {
 	ctx := context.Background()
 	db, err := New("file:cleanup_test?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
 
-	repo := NewPDFJobStore(db)
+	repo := NewPDFParseJobRepository(db)
 	userID := "user-cleanup"
 
 	now := time.Now().UTC()
@@ -1604,22 +1586,21 @@ func TestPDFParseJobStore_CleanupCompletedJobs(t *testing.T) {
 	}
 
 	// Old job should be gone
-	_, err = repo.Job(ctx, userID, "job-old")
+	_, err = repo.GetJob(ctx, userID, "job-old")
 	if !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for cleaned up job, got: %v", err)
 	}
 
 	// New job should still exist
-	_, err = repo.Job(ctx, userID, "job-new")
+	_, err = repo.GetJob(ctx, userID, "job-new")
 	if err != nil {
 		t.Errorf("expected new job to remain, got: %v", err)
 	}
 }
 
-func TestBranchStore_GapReportPropagation(t *testing.T) {
+func TestBranchRepository_GapReportPropagation(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	branchRepo := stores.branches
+	_, _, _, branchRepo := setupTestDB(t)
 
 	userID := fmt.Sprintf("user-gap-%d", time.Now().UnixNano())
 	score85 := 85.0
@@ -1658,7 +1639,7 @@ func TestBranchStore_GapReportPropagation(t *testing.T) {
 			t.Fatalf("failed to complete version: %v", err)
 		}
 
-		fetched, err := branchRepo.Branch(ctx, userID, b.ID)
+		fetched, err := branchRepo.GetBranch(ctx, userID, b.ID)
 		if err != nil {
 			t.Fatalf("failed to get branch: %v", err)
 		}
@@ -1698,7 +1679,7 @@ func TestBranchStore_GapReportPropagation(t *testing.T) {
 			t.Fatalf("failed to complete version: %v", err)
 		}
 
-		fetched, err := branchRepo.Branch(ctx, userID, b.ID)
+		fetched, err := branchRepo.GetBranch(ctx, userID, b.ID)
 		if err != nil {
 			t.Fatalf("failed to get branch: %v", err)
 		}
@@ -1711,10 +1692,9 @@ func TestBranchStore_GapReportPropagation(t *testing.T) {
 	})
 }
 
-func TestBranchStore_ATSScorePropagation(t *testing.T) {
+func TestBranchRepository_ATSScorePropagation(t *testing.T) {
 	ctx := context.Background()
-	stores := setupTestDB(t)
-	branchRepo := stores.branches
+	_, _, _, branchRepo := setupTestDB(t)
 	userID := fmt.Sprintf("user-ats-%d", time.Now().UnixNano())
 
 	t.Run("UpdateVersionATSScore persists on version and propagates to parent branch when active", func(t *testing.T) {
@@ -1752,7 +1732,7 @@ func TestBranchStore_ATSScorePropagation(t *testing.T) {
 			t.Fatalf("failed to update version ATS score: %v", err)
 		}
 
-		fetchedV1, err := branchRepo.Version(ctx, b.ID, v1.ID)
+		fetchedV1, err := branchRepo.GetVersion(ctx, b.ID, v1.ID)
 		if err != nil {
 			t.Fatalf("failed to get v1: %v", err)
 		}
@@ -1760,7 +1740,7 @@ func TestBranchStore_ATSScorePropagation(t *testing.T) {
 			t.Fatalf("expected v1 ATSScore (95.0, 88.5), got %+v", fetchedV1.ATSScore)
 		}
 
-		fetchedBranch, err := branchRepo.Branch(ctx, userID, b.ID)
+		fetchedBranch, err := branchRepo.GetBranch(ctx, userID, b.ID)
 		if err != nil {
 			t.Fatalf("failed to get branch: %v", err)
 		}
@@ -1787,7 +1767,7 @@ func TestBranchStore_ATSScorePropagation(t *testing.T) {
 			t.Fatalf("failed to complete v2: %v", err)
 		}
 
-		fetchedBranchAfterV2, err := branchRepo.Branch(ctx, userID, b.ID)
+		fetchedBranchAfterV2, err := branchRepo.GetBranch(ctx, userID, b.ID)
 		if err != nil {
 			t.Fatalf("failed to get branch after v2: %v", err)
 		}
@@ -1796,7 +1776,7 @@ func TestBranchStore_ATSScorePropagation(t *testing.T) {
 		}
 
 		// v1 still retains its ATSScore
-		fetchedV1Again, err := branchRepo.Version(ctx, b.ID, v1.ID)
+		fetchedV1Again, err := branchRepo.GetVersion(ctx, b.ID, v1.ID)
 		if err != nil {
 			t.Fatalf("failed to get v1 again: %v", err)
 		}

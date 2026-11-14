@@ -133,16 +133,11 @@ func SeedBaseline(ctx context.Context, db *gorm.DB, cfg Config) error {
 	}
 
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return seed.DefaultDataStores(
-			ctx,
-			NewProfileStore(tx),
-			NewCareerStore(tx),
-			NewBranchStore(tx),
-			NewTemplateStore(tx),
-			NewPresetStore(tx),
-			NewUserStore(tx),
-			targetUserID,
-		)
+		profileRepo := NewProfileRepository(tx)
+		branchRepo := NewBranchRepository(tx)
+		templateRepo := NewTemplateRepository(tx)
+		presetRepo := NewPresetRepository(tx)
+		return seed.SeedDefaultData(ctx, profileRepo, branchRepo, templateRepo, presetRepo, targetUserID)
 	})
 }
 
@@ -170,15 +165,14 @@ func NewStoreBundle(db *gorm.DB, opts ...Option) (core.Store, error) {
 	}
 
 	return &core.StoreBundle{
-		ProfileStore:  NewProfileStore(db),
-		CareerStore:   NewCareerStore(db),
-		PresetStore:   NewPresetStore(db),
-		TemplateStore: NewTemplateStore(db),
-		BranchStore:   NewBranchStore(db),
-		PDFJobStore:   NewPDFJobStore(db),
-		QuotaStore:    NewQuotaStore(db),
-		UserStore:     NewUserStore(db),
-		Closer:        closer,
+		ProfileRepo:  NewProfileRepository(db),
+		PresetRepo:   NewPresetRepository(db),
+		TemplateRepo: NewTemplateRepository(db),
+		BranchRepo:   NewBranchRepository(db),
+		PDFJobRepo:   NewPDFParseJobRepository(db),
+		QuotaRepo:    NewQuotaRepository(db),
+		UserRepo:     NewUserRepository(db),
+		Closer:       closer,
 	}, nil
 }
 

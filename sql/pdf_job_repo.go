@@ -11,78 +11,18 @@ import (
 	"github.com/resumeee-app/resumeee-core"
 )
 
-// pdfParseJobRecord is the GORM persistence model for core.PDFParseJob.
-type pdfParseJobRecord struct {
-	ID           string                 `gorm:"primaryKey;type:text"`
-	UserID       string                 `gorm:"index;not null"`
-	Status       core.PDFParseJobStatus `gorm:"index;not null"`
-	Filename     string
-	Provider     string
-	Model        string
-	Result       *core.JSONResume `gorm:"serializer:json"`
-	ErrorMessage string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	CompletedAt  *time.Time
-}
-
-// TableName overrides the GORM table name to pdf_parse_jobs.
-func (pdfParseJobRecord) TableName() string {
-	return "pdf_parse_jobs"
-}
-
-func toPDFParseJobRecord(j *core.PDFParseJob) *pdfParseJobRecord {
-	if j == nil {
-		return nil
-	}
-	return &pdfParseJobRecord{
-		ID:           j.ID,
-		UserID:       j.UserID,
-		Status:       j.Status,
-		Filename:     j.Filename,
-		Provider:     j.Provider,
-		Model:        j.Model,
-		Result:       j.Result,
-		ErrorMessage: j.ErrorMessage,
-		CreatedAt:    j.CreatedAt,
-		UpdatedAt:    j.UpdatedAt,
-		CompletedAt:  j.CompletedAt,
-	}
-}
-
-func toCorePDFParseJob(r *pdfParseJobRecord) *core.PDFParseJob {
-	if r == nil {
-		return nil
-	}
-	return &core.PDFParseJob{
-		ID:           r.ID,
-		UserID:       r.UserID,
-		Status:       r.Status,
-		Filename:     r.Filename,
-		Provider:     r.Provider,
-		Model:        r.Model,
-		Result:       r.Result,
-		ErrorMessage: r.ErrorMessage,
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		CompletedAt:  r.CompletedAt,
-	}
-}
-
-// PDFJobStore implements core.PDFJobStore backed by GORM.
-type PDFJobStore struct {
+// pdfParseJobRepository implements core.PDFParseJobRepository backed by SQLite and GORM.
+type pdfParseJobRepository struct {
 	db *gorm.DB
 }
 
-var _ core.PDFJobStore = (*PDFJobStore)(nil)
-
-// NewPDFJobStore constructs a new SQL-backed PDFJobStore.
-func NewPDFJobStore(db *gorm.DB) *PDFJobStore {
-	return &PDFJobStore{db: db}
+// NewPDFParseJobRepository constructs a new SQLite-backed PDFParseJobRepository.
+func NewPDFParseJobRepository(db *gorm.DB) core.PDFParseJobRepository {
+	return &pdfParseJobRepository{db: db}
 }
 
 // CreateJob persists a new PDFParseJob entity in the database.
-func (s *PDFJobStore) CreateJob(ctx context.Context, job *core.PDFParseJob) error {
+func (r *pdfParseJobRepository) CreateJob(ctx context.Context, job *core.PDFParseJob) error {
 	if job == nil {
 		return fmt.Errorf("%w: job cannot be nil", core.ErrValidation)
 	}
@@ -96,14 +36,14 @@ func (s *PDFJobStore) CreateJob(ctx context.Context, job *core.PDFParseJob) erro
 	}
 	job.UpdatedAt = now
 
-	if err := s.db.WithContext(ctx).Create(toPDFParseJobRecord(job)).Error; err != nil {
+	if err := r.db.WithContext(ctx).Create(job).Error; err != nil {
 		return mapError(err)
 	}
 	return nil
 }
 
-// Job retrieves a PDFParseJob by its unique ID scoped to the authenticated user ID.
-func (s *PDFJobStore) Job(ctx context.Context, userID, jobID string) (*core.PDFParseJob, error) {
+// GetJob retrieves a PDFParseJob by its unique ID scoped to the authenticated user ID.
+func (r *pdfParseJobRepository) GetJob(ctx context.Context, userID, jobID string) (*core.PDFParseJob, error) {
 	if userID == "" {
 		return nil, fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
 	}
@@ -111,41 +51,41 @@ func (s *PDFJobStore) Job(ctx context.Context, userID, jobID string) (*core.PDFP
 		return nil, fmt.Errorf("%w: job id cannot be empty", core.ErrValidation)
 	}
 
-	var rec pdfParseJobRecord
-	query := s.db.WithContext(ctx).Where("id = ? AND user_id = ?", jobID, userID)
+	var job core.PDFParseJob
+	query := r.db.WithContext(ctx).Where("id = ? AND user_id = ?", jobID, userID)
 
-	if err := query.First(&rec).Error; err != nil {
+	if err := query.First(&job).Error; err != nil {
 		return nil, mapError(err)
 	}
-	return toCorePDFParseJob(&rec), nil
+	return &job, nil
 }
 
 // UpdateJobStatus updates the lifecycle state, result payload, and error message of a parse job.
-func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status core.PDFParseJobStatus, result *core.JSONResume, errMsg string) error {
+func (r *pdfParseJobRepository) UpdateJobStatus(ctx context.Context, jobID string, status core.PDFParseJobStatus, result any, errMsg string) error {
 	if jobID == "" {
 		return fmt.Errorf("%w: job id cannot be empty", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var rec pdfParseJobRecord
-		if err := tx.Where("id = ?", jobID).First(&rec).Error; err != nil {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var job core.PDFParseJob
+		if err := tx.Where("id = ?", jobID).First(&job).Error; err != nil {
 			return mapError(err)
 		}
 
 		now := time.Now().UTC()
-		rec.Status = status
-		rec.UpdatedAt = now
+		job.Status = status
+		job.UpdatedAt = now
 		if errMsg != "" {
-			rec.ErrorMessage = errMsg
+			job.ErrorMessage = errMsg
 		}
 		if result != nil {
-			rec.Result = result
+			job.Result = result
 		}
 		if status == core.PDFParseJobStatusCompleted || status == core.PDFParseJobStatusFailed {
-			rec.CompletedAt = &now
+			job.CompletedAt = &now
 		}
 
-		if err := tx.Save(&rec).Error; err != nil {
+		if err := tx.Save(&job).Error; err != nil {
 			return mapError(err)
 		}
 		return nil
@@ -153,7 +93,7 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 }
 
 // FailInterruptedJobs marks all pending and processing jobs as failed with the given reason upon server restart.
-func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) error {
+func (r *pdfParseJobRepository) FailInterruptedJobs(ctx context.Context, reason string) error {
 	now := time.Now()
 	updates := map[string]any{
 		"status":        core.PDFParseJobStatusFailed,
@@ -162,8 +102,8 @@ func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) er
 		"completed_at":  &now,
 	}
 
-	err := s.db.WithContext(ctx).
-		Model(&pdfParseJobRecord{}).
+	err := r.db.WithContext(ctx).
+		Model(&core.PDFParseJob{}).
 		Where("status IN ?", []core.PDFParseJobStatus{
 			core.PDFParseJobStatusPending,
 			core.PDFParseJobStatusProcessing,
@@ -177,17 +117,17 @@ func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) er
 }
 
 // CleanupCompletedJobs purges completed or failed PDF parse jobs older than the retention threshold.
-func (s *PDFJobStore) CleanupCompletedJobs(ctx context.Context, userID string, olderThan time.Duration) error {
+func (r *pdfParseJobRepository) CleanupCompletedJobs(ctx context.Context, userID string, olderThan time.Duration) error {
 	if userID == "" {
 		return fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
 	}
 	cutoff := time.Now().UTC().Add(-olderThan)
-	err := s.db.WithContext(ctx).
+	err := r.db.WithContext(ctx).
 		Where("user_id = ? AND status IN ? AND (completed_at < ? OR (completed_at IS NULL AND updated_at < ?))",
 			userID,
 			[]core.PDFParseJobStatus{core.PDFParseJobStatusCompleted, core.PDFParseJobStatusFailed},
 			cutoff, cutoff,
 		).
-		Delete(&pdfParseJobRecord{}).Error
+		Delete(&core.PDFParseJob{}).Error
 	return mapError(err)
 }
