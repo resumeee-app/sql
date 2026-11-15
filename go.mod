@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/google/uuid v1.6.0
-	github.com/resumeee-app/resumeee-core v0.0.0-20261112064600-8a4aa3c5d154
+	github.com/resumeee-app/resumeee-core v0.0.0-20261115080025-7139b8e0fd33
 	gorm.io/gorm v1.31.2
 )
 
@@ -16,7 +16,7 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.7.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect

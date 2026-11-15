@@ -64,9 +64,14 @@ func toCoreTenantQuota(r *tenantQuotaRecord) *core.TenantQuota {
 
 // llmUsageRecord is the GORM persistence model for core.LLMUsageRecord.
 type llmUsageRecord struct {
-	ID               string                 `gorm:"primaryKey;type:text"`
-	UserID           string                 `gorm:"index;not null"`
-	Operation        core.LLMOperationType  `gorm:"not null"`
+	ID         string                `gorm:"primaryKey;type:text"`
+	UserID     string                `gorm:"index;not null"`
+	Operation  core.LLMOperationType `gorm:"not null"`
+	Provider   string                `gorm:"not null;default:''"`
+	Model      string                `gorm:"not null;default:''"`
+	StatusCode int                   `gorm:"not null;default:0"`
+	// Latency persists the upstream round-trip duration as integer nanoseconds.
+	Latency          time.Duration          `gorm:"column:latency_ns;not null;default:0"`
 	EstimatedTokens  int                    `gorm:"not null"`
 	PromptTokens     int                    `gorm:"not null;default:0"`
 	CompletionTokens int                    `gorm:"not null;default:0"`
@@ -90,6 +95,10 @@ func toLLMUsageRecord(u *core.LLMUsageRecord) *llmUsageRecord {
 		ID:               u.ID,
 		UserID:           u.UserID,
 		Operation:        u.Operation,
+		Provider:         u.Provider,
+		Model:            u.Model,
+		StatusCode:       u.StatusCode,
+		Latency:          u.Latency,
 		EstimatedTokens:  u.EstimatedTokens,
 		PromptTokens:     u.PromptTokens,
 		CompletionTokens: u.CompletionTokens,
@@ -109,6 +118,10 @@ func toCoreLLMUsageRecord(r *llmUsageRecord) *core.LLMUsageRecord {
 		ID:               r.ID,
 		UserID:           r.UserID,
 		Operation:        r.Operation,
+		Provider:         r.Provider,
+		Model:            r.Model,
+		StatusCode:       r.StatusCode,
+		Latency:          r.Latency,
 		EstimatedTokens:  r.EstimatedTokens,
 		PromptTokens:     r.PromptTokens,
 		CompletionTokens: r.CompletionTokens,
@@ -264,11 +277,24 @@ func (s *QuotaStore) ReserveQuota(
 	return &record, nil
 }
 
-// CommitUsage reconciles token usage and marks the reservation committed.
-func (s *QuotaStore) CommitUsage(ctx context.Context, reservationID string, usage core.TokenUsage) error {
+// applyUsageTelemetry copies pre-normalized provider telemetry and token counters onto rec.
+func applyUsageTelemetry(rec *llmUsageRecord, normalized core.LLMTelemetry) {
+	rec.Provider = normalized.Provider
+	rec.Model = normalized.Model
+	rec.StatusCode = normalized.StatusCode
+	rec.Latency = normalized.Latency
+	rec.PromptTokens = normalized.Usage.PromptTokens
+	rec.CompletionTokens = normalized.Usage.CompletionTokens
+	rec.TotalTokens = normalized.Usage.TotalTokens
+}
+
+// CommitUsage reconciles reported token usage against the reservation estimate,
+// persists call telemetry, and marks the reservation committed.
+func (s *QuotaStore) CommitUsage(ctx context.Context, reservationID string, telemetry core.LLMTelemetry) error {
 	if reservationID == "" {
 		return fmt.Errorf("%w: reservation id cannot be empty", core.ErrValidation)
 	}
+	normalized := telemetry.Normalize()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var rec llmUsageRecord
@@ -283,7 +309,7 @@ func (s *QuotaStore) CommitUsage(ctx context.Context, reservationID string, usag
 		var quotaRec tenantQuotaRecord
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", rec.UserID).First(&quotaRec).Error; err == nil {
 			quota := toCoreTenantQuota(&quotaRec)
-			delta := usage.TotalTokens - rec.EstimatedTokens
+			delta := normalized.Usage.TotalTokens - rec.EstimatedTokens
 			quota.AdjustMonthlyTokens(delta)
 			quota.UpdatedAt = time.Now().UTC()
 			if saveErr := tx.Save(toTenantQuotaRecord(quota)).Error; saveErr != nil {
@@ -293,20 +319,19 @@ func (s *QuotaStore) CommitUsage(ctx context.Context, reservationID string, usag
 
 		now := time.Now().UTC()
 		rec.Status = core.ReservationStatusCommitted
-		rec.PromptTokens = usage.PromptTokens
-		rec.CompletionTokens = usage.CompletionTokens
-		rec.TotalTokens = usage.TotalTokens
+		applyUsageTelemetry(&rec, normalized)
 		rec.CommittedAt = &now
 
 		return tx.Save(&rec).Error
 	})
 }
 
-// ReleaseQuota refunds the reservation and marks it released.
-func (s *QuotaStore) ReleaseQuota(ctx context.Context, reservationID string, errMsg string) error {
+// ReleaseQuota refunds the reservation, records any upstream call telemetry, and marks it released.
+func (s *QuotaStore) ReleaseQuota(ctx context.Context, reservationID string, errMsg string, telemetry core.LLMTelemetry) error {
 	if reservationID == "" {
 		return fmt.Errorf("%w: reservation id cannot be empty", core.ErrValidation)
 	}
+	normalized := telemetry.Normalize()
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var rec llmUsageRecord
@@ -329,6 +354,7 @@ func (s *QuotaStore) ReleaseQuota(ctx context.Context, reservationID string, err
 		}
 
 		rec.Status = core.ReservationStatusReleased
+		applyUsageTelemetry(&rec, normalized)
 		rec.ErrorMessage = errMsg
 
 		return tx.Save(&rec).Error
