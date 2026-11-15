@@ -178,6 +178,7 @@ var (
 	mysqlUnixRegex = regexp.MustCompile(`@(unix\([^)]+\)|/)`)
 )
 
+// extractHostFromDSN parses the hostname from URI, Go MySQL DSN, or keyword=value connection strings.
 func extractHostFromDSN(dsn string) string {
 	trimmed := strings.TrimSpace(dsn)
 	if trimmed == "" {
@@ -218,6 +219,7 @@ func extractHostFromDSN(dsn string) string {
 	return ""
 }
 
+// isLocalHost reports whether host explicitly resolves to loopback.
 func isLocalHost(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if h == "" {

@@ -2,40 +2,83 @@ package sql
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/glebarez/sqlite"
+	"github.com/resumeee-app/resumeee-core/seed"
+	"github.com/resumeee-app/resumeee-core/store"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-
-	"github.com/resumeee-app/resumeee-core"
-	"github.com/resumeee-app/resumeee-core/seed"
 )
 
-// Option defines a functional configuration option for Store bundles.
-type Option func(*bundleOptions)
-
-type bundleOptions struct {
-	closer func() error
-}
-
-// WithCloser registers an explicit closer cleanup callback on the store bundle.
-func WithCloser(closer func() error) Option {
-	return func(o *bundleOptions) {
-		o.closer = closer
+// Open bootstraps a complete SQL-backed *store.Store using the provided configuration:
+// validating connection settings, running auto-migration when enabled, seeding baseline
+// templates/presets/global skills and default tenant resources, and returning *store.Store.
+func Open(ctx context.Context, cfg Config) (*store.Store, error) {
+	if cfg.Driver == "" {
+		cfg.Driver = DriverSQLite
 	}
+	if cfg.DefaultUserID == "" {
+		cfg.DefaultUserID = "default"
+	}
+
+	db, err := ResolveConnection(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.AutoMigrate {
+		if err := MigrateSchema(db); err != nil {
+			closeUnderlyingDB(db)
+			return nil, err
+		}
+	}
+
+	backend, err := NewBackend(db)
+	if err != nil {
+		closeUnderlyingDB(db)
+		return nil, err
+	}
+
+	st := store.New(backend)
+	if err := SeedBaseline(ctx, st, cfg); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+
+	return st, nil
 }
 
-// ResolveConnection executes Phase 1 of store initialization:
-// connection resolution, DSN credential sanitization, GORM lifecycle callbacks,
-// connection pooling configuration, and dialect tuning.
+// OpenWithOptions constructs a Config from DefaultConfig() overridden by functional options
+// and calls Open.
+func OpenWithOptions(ctx context.Context, opts ...ConfigOption) (*store.Store, error) {
+	cfg := DefaultConfig()
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt(&cfg); err != nil {
+			return nil, fmt.Errorf("sql: apply config option: %w", err)
+		}
+	}
+	return Open(ctx, cfg)
+}
+
+// OpenStore provides a convenience constructor for opening an auto-migrated and seeded
+// SQLite *store.Store at dbPath with optional ConfigOption overrides.
+func OpenStore(ctx context.Context, dbPath string, opts ...ConfigOption) (*store.Store, error) {
+	baseOpts := make([]ConfigOption, 0, 2+len(opts))
+	baseOpts = append(baseOpts, WithDriver(DriverSQLite), WithDBPath(dbPath))
+	baseOpts = append(baseOpts, opts...)
+	return OpenWithOptions(ctx, baseOpts...)
+}
+
+// ResolveConnection validates cfg, opens the underlying SQL driver dialector, applies dialect
+// tuning and connection pooling, and returns the initialized *gorm.DB handle.
 func ResolveConnection(cfg Config) (*gorm.DB, error) {
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid storage configuration: %w", err)
+		return nil, err
 	}
 
 	driver := cfg.Driver
@@ -43,194 +86,62 @@ func ResolveConnection(cfg Config) (*gorm.DB, error) {
 		driver = DriverSQLite
 	}
 
-	var db *gorm.DB
-	var err error
+	dsn := strings.TrimSpace(cfg.DSN)
+	if driver == DriverSQLite && dsn == "" {
+		dsn = "file::memory:?cache=shared"
+	}
 
+	var dialector gorm.Dialector
 	switch driver {
 	case DriverSQLite:
-		dsn := cfg.DSN
-		if dsn == "" {
-			dsn = ":memory:"
-		}
-
-		// Ensure parent directory exists for file-backed SQLite
-		if dsn != ":memory:" && !strings.Contains(dsn, "mode=memory") {
-			dir := filepath.Dir(dsn)
-			if dir != "." && dir != "" {
-				if err := os.MkdirAll(dir, 0750); err != nil {
-					return nil, fmt.Errorf("creating database directory %s: %w", dir, err)
-				}
-			}
-		}
-
-		db, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
-			Logger:      logger.Default.LogMode(logger.Silent),
-			PrepareStmt: true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to open sqlite database at %s: %w", SanitizeDSN(dsn), err)
-		}
-
-	case DriverPostgres, DriverMySQL:
-		return nil, fmt.Errorf("driver %s requires external dialect driver (RFC-006 Phase 2)", driver)
-
+		dialector = sqlite.Open(dsn)
 	default:
-		return nil, fmt.Errorf("unsupported database driver: %s", driver)
+		return nil, fmt.Errorf("sql: driver %s is not registered in this build", driver)
 	}
 
-	// Register pure domain Normalizable lifecycle callbacks on GORM engine
-	if err := RegisterNormalizationCallbacks(db); err != nil {
-		if sqlDB, dbErr := db.DB(); dbErr == nil && sqlDB != nil {
-			_ = sqlDB.Close()
-		}
-		return nil, fmt.Errorf("failed to register normalization callbacks: %w", err)
-	}
-
-	// Configure connection pooling on *sql.DB
-	sqlDB, err := db.DB()
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve sql.DB: %w", err)
-	}
-	if sqlDB == nil {
-		return nil, errors.New("sql.DB instance is nil")
+		return nil, fmt.Errorf("sql: connect (%s) dsn=%s: %w", driver, SanitizeDSN(dsn), err)
 	}
 
-	poolCfg := ConnectionPoolConfig{
-		MaxOpenConns:    cfg.MaxOpenConns,
-		MaxIdleConns:    cfg.MaxIdleConns,
-		ConnMaxLifetime: cfg.ConnMaxLifetime,
-		ConnMaxIdleTime: cfg.ConnMaxIdleTime,
+	if err := ConfigureDialect(db, driver, dsn); err != nil {
+		closeUnderlyingDB(db)
+		return nil, err
 	}
-	ConfigureConnectionPool(sqlDB, driver, cfg.DSN, poolCfg)
 
-	// Configure engine-specific pragmas and dialect tuning
-	if err := ConfigureDialect(db, driver, cfg.DSN); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("failed to configure dialect: %w", err)
+	if sqlDB, dbErr := db.DB(); dbErr == nil && sqlDB != nil {
+		ConfigureConnectionPool(sqlDB, driver, dsn, poolConfig(cfg))
 	}
 
 	return db, nil
 }
 
-// MigrateSchema executes Phase 2 of store initialization:
-// dialect-aware table migration and join index creation.
-func MigrateSchema(ctx context.Context, db *gorm.DB, _ DriverType) error {
+// MigrateSchema executes database schema migration and secondary/partial index creation.
+func MigrateSchema(db *gorm.DB) error {
+	return AutoMigrate(db)
+}
+
+// SeedBaseline idempotently seeds system templates, presets, global skills, and the configured
+// default tenant into st.
+func SeedBaseline(ctx context.Context, st *store.Store, cfg Config) error {
+	userID := cfg.DefaultUserID
+	if userID == "" {
+		userID = "default"
+	}
+	if err := seed.DefaultData(ctx, st, userID); err != nil {
+		return fmt.Errorf("sql: seed baseline data: %w", err)
+	}
+	return nil
+}
+
+// closeUnderlyingDB closes the raw database handle backing db when open initialization fails.
+func closeUnderlyingDB(db *gorm.DB) {
 	if db == nil {
-		return errors.New("database instance cannot be nil")
+		return
 	}
-	return AutoMigrate(ctx, db)
-}
-
-// SeedBaseline executes Phase 3 of store initialization:
-// idempotent baseline seeding of system templates, presets, global skills, and default tenant.
-func SeedBaseline(ctx context.Context, db *gorm.DB, cfg Config) error {
-	if db == nil {
-		return errors.New("database instance cannot be nil")
+	if sqlDB, err := db.DB(); err == nil && sqlDB != nil {
+		_ = sqlDB.Close()
 	}
-	targetUserID := cfg.DefaultUserID
-	if targetUserID == "" {
-		targetUserID = "default"
-	}
-
-	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return seed.DefaultDataStores(
-			ctx,
-			NewProfileStore(tx),
-			NewCareerStore(tx),
-			NewBranchStore(tx),
-			NewTemplateStore(tx),
-			NewPresetStore(tx),
-			NewUserStore(tx),
-			targetUserID,
-		)
-	})
-}
-
-// NewStoreBundle executes Phase 4 of store initialization:
-// instantiating repository handles with injected dependencies.
-func NewStoreBundle(db *gorm.DB, opts ...Option) (core.Store, error) {
-	if db == nil {
-		return nil, errors.New("database instance cannot be nil")
-	}
-
-	var options bundleOptions
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	sqlDB, err := db.DB()
-	closer := func() error {
-		if options.closer != nil {
-			return options.closer()
-		}
-		if err == nil && sqlDB != nil {
-			return sqlDB.Close()
-		}
-		return nil
-	}
-
-	return &core.StoreBundle{
-		ProfileStore:  NewProfileStore(db),
-		CareerStore:   NewCareerStore(db),
-		PresetStore:   NewPresetStore(db),
-		TemplateStore: NewTemplateStore(db),
-		BranchStore:   NewBranchStore(db),
-		PDFJobStore:   NewPDFJobStore(db),
-		QuotaStore:    NewQuotaStore(db),
-		UserStore:     NewUserStore(db),
-		Closer:        closer,
-	}, nil
-}
-
-// Open orchestrates the unified 4-phase store initialization pipeline:
-// Phase 1: Connection resolution, credential masking, callbacks, and pooling.
-// Phase 2: Schema auto-migration (if enabled).
-// Phase 3: Idempotent baseline data seeding.
-// Phase 4: Repository bundle instantiation.
-func Open(ctx context.Context, cfg Config) (core.Store, error) {
-	// Phase 1: Connection & Pool Resolution
-	db, err := ResolveConnection(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("resolving database connection: %w", err)
-	}
-
-	closeOnErr := func(cause error) (core.Store, error) {
-		if sqlDB, dbErr := db.DB(); dbErr == nil && sqlDB != nil {
-			_ = sqlDB.Close()
-		}
-		return nil, cause
-	}
-
-	// Phase 2: Schema Migration
-	if cfg.AutoMigrate {
-		if err := MigrateSchema(ctx, db, cfg.Driver); err != nil {
-			return closeOnErr(fmt.Errorf("migrating schema: %w", err))
-		}
-	}
-
-	// Phase 3: Baseline Seeding
-	if err := SeedBaseline(ctx, db, cfg); err != nil {
-		return closeOnErr(fmt.Errorf("seeding baseline data: %w", err))
-	}
-
-	// Phase 4: Repository Bundle Instantiation
-	store, err := NewStoreBundle(db)
-	if err != nil {
-		return closeOnErr(fmt.Errorf("instantiating store bundle: %w", err))
-	}
-	return store, nil
-}
-
-// OpenWithOptions initializes a core.Store applying functional ConfigOptions on top of DefaultConfig().
-func OpenWithOptions(ctx context.Context, opts ...ConfigOption) (core.Store, error) {
-	cfg := DefaultConfig()
-	for _, opt := range opts {
-		if opt == nil {
-			continue
-		}
-		if err := opt(&cfg); err != nil {
-			return nil, err
-		}
-	}
-	return Open(ctx, cfg)
 }

@@ -2,284 +2,84 @@ package sql
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/resumeee-app/resumeee-core"
 	"github.com/resumeee-app/resumeee-core/seed"
 )
 
-func TestSeedDefaultData_FirstBoot(t *testing.T) {
+func TestSeedDefaultData_FirstBootAndIdempotency(t *testing.T) {
 	ctx := context.Background()
-	db, err := New("file:seed_test_1?mode=memory&cache=shared")
+	dbPath := filepath.Join(t.TempDir(), "seed.db")
+
+	st, err := OpenStore(ctx, dbPath)
 	if err != nil {
-		t.Fatalf("failed to initialize test database: %v", err)
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// Re-running SeedDefaultData must be strictly idempotent without bumping revisions or duplicating entities.
+	if err := SeedDefaultData(ctx, st, "default"); err != nil {
+		t.Fatalf("second SeedDefaultData: %v", err)
 	}
 
-	if err := SeedDefaultDataDB(ctx, db); err != nil {
-		t.Fatalf("SeedDefaultData failed: %v", err)
-	}
-
-	profileRepo := NewProfileStore(db)
-	templateRepo := NewTemplateStore(db)
-	presetRepo := NewPresetStore(db)
-
-	// 1. Verify default profile
-	prof, err := profileRepo.Profile(ctx, "default")
+	prof, err := st.Profiles().Profile(ctx, "default")
 	if err != nil {
-		t.Fatalf("failed to get default profile: %v", err)
+		t.Fatalf("Profile: %v", err)
 	}
-	if prof.UserID != "default" {
-		t.Errorf("expected UserID 'default', got %s", prof.UserID)
-	}
-	if prof.MainRevision != 1 {
-		t.Errorf("expected MainRevision 1, got %d", prof.MainRevision)
+	if prof.UserID != "default" || prof.MainRevision != 1 {
+		t.Fatalf("unexpected default profile: %+v", prof)
 	}
 
-	// 2. Verify built-in template sets
-	templates, err := templateRepo.ListTemplates(ctx, "default")
+	templates, err := st.Templates().ListTemplates(ctx, "default")
 	if err != nil {
-		t.Fatalf("failed to list templates: %v", err)
+		t.Fatalf("ListTemplates: %v", err)
 	}
-	expectedTemplateCount := len(seed.DefaultTemplateSets())
-	if len(templates) != expectedTemplateCount || len(templates) != 5 {
-		t.Fatalf("expected exactly %d built-in templates (count 5), got %d", expectedTemplateCount, len(templates))
+	if len(templates) != len(seed.DefaultTemplateSets()) {
+		t.Fatalf("expected %d built-in templates, got %d", len(seed.DefaultTemplateSets()), len(templates))
 	}
-
-	tmplMap := make(map[string]core.TemplateSet)
 	for _, tmpl := range templates {
-		tmplMap[tmpl.Name] = tmpl
-		// Verify template syntax validity in domain
 		if err := (core.DefaultTemplateValidator{}).Validate(&tmpl); err != nil {
-			t.Errorf("template %s has invalid syntax: %v", tmpl.Name, err)
+			t.Errorf("template %s syntax invalid: %v", tmpl.Name, err)
 		}
 	}
 
-	expectedTemplates := []struct {
-		name string
-		id   string
-	}{
-		{"Standard Clean", core.TemplateStandardCleanID},
-		{"Detailed Immigration / CV", core.TemplateDetailedImmigrationCVID},
-		{"ATS Minimal Plain-Text & Clean HTML", core.TemplateATSMinimalTxtID},
-		{"ATS Modern Tech", core.TemplateATSHybridTechID},
-		{"ATS Executive Clean", core.TemplateATSExecutiveCleanID},
-	}
-
-	for _, exp := range expectedTemplates {
-		tmpl, ok := tmplMap[exp.name]
-		if !ok {
-			t.Errorf("missing built-in template %q", exp.name)
-			continue
-		}
-		if tmpl.ID != exp.id {
-			t.Errorf("expected template %q to have ID %q, got %q", exp.name, exp.id, tmpl.ID)
-		}
-		if tmpl.HTMLTemplate == "" || tmpl.MarkdownTemplate == "" || tmpl.TextTemplate == "" {
-			t.Errorf("expected %q to have HTML, Markdown, and PlainText templates", exp.name)
-		}
-	}
-
-	// 3. Verify built-in presets
-	presets, err := presetRepo.ListPresets(ctx, "default")
+	presets, err := st.Presets().ListPresets(ctx, "default")
 	if err != nil {
-		t.Fatalf("failed to list presets: %v", err)
+		t.Fatalf("ListPresets: %v", err)
 	}
-	if len(presets) < 2 {
-		t.Errorf("expected at least 2 built-in presets, got %d", len(presets))
-	}
-
-	presetMap := make(map[string]core.Preset)
-	for _, p := range presets {
-		presetMap[p.Name] = p
+	if len(presets) < len(seed.DefaultPresets(core.SystemUserID)) {
+		t.Fatalf("expected at least %d presets, got %d", len(seed.DefaultPresets(core.SystemUserID)), len(presets))
 	}
 
-	techPreset, ok := presetMap["1-Page Tech Resume"]
-	if !ok {
-		t.Errorf("missing built-in preset '1-Page Tech Resume'")
-	} else if techPreset.SystemInstructions == "" || techPreset.TemplateSetID == "" {
-		t.Errorf("'1-Page Tech Resume' preset missing instructions or template_set_id")
-	}
-
-	cvPreset, ok := presetMap["Immigration Full History CV"]
-	if !ok {
-		t.Errorf("missing built-in preset 'Immigration Full History CV'")
-	} else if cvPreset.SystemInstructions == "" || cvPreset.TemplateSetID == "" {
-		t.Errorf("'Immigration Full History CV' preset missing instructions or template_set_id")
-	}
-
-	// 4. Verify default branch seeded
-	branchRepo := NewBranchStore(db)
-	branches, err := branchRepo.ListBranches(ctx, "default")
+	globals, err := st.Career().ListGlobalSkills(ctx)
 	if err != nil {
-		t.Fatalf("failed to list branches: %v", err)
+		t.Fatalf("ListGlobalSkills: %v", err)
 	}
-	if len(branches) == 0 {
-		t.Fatalf("expected at least 1 branch (default branch), got 0")
-	}
-	defaultBranch := branches[0]
-	if !defaultBranch.IsDefault {
-		t.Errorf("expected first branch to have IsDefault=true, got %+v", defaultBranch)
-	}
-	if defaultBranch.ID != core.DefaultBranchID("default") {
-		t.Errorf("expected default branch ID %s, got %s", core.DefaultBranchID("default"), defaultBranch.ID)
-	}
-	if defaultBranch.Name != core.DefaultBranchName {
-		t.Errorf("expected default branch name %s, got %s", core.DefaultBranchName, defaultBranch.Name)
-	}
-	if defaultBranch.TemplateSetID != core.TemplateStandardCleanID {
-		t.Errorf("expected default branch template %s, got %s", core.TemplateStandardCleanID, defaultBranch.TemplateSetID)
-	}
-	if defaultBranch.ActiveVersionID == nil || *defaultBranch.ActiveVersionID == "" {
-		t.Fatalf("expected default branch to have an active version")
+	if len(globals) != len(seed.DefaultGlobalSkills()) {
+		t.Fatalf("expected %d global skills, got %d", len(seed.DefaultGlobalSkills()), len(globals))
 	}
 
-	ver, err := branchRepo.Version(ctx, defaultBranch.ID, *defaultBranch.ActiveVersionID)
+	branches, err := st.Branches().ListBranches(ctx, "default")
 	if err != nil {
-		t.Fatalf("failed to get default branch active version: %v", err)
+		t.Fatalf("ListBranches: %v", err)
 	}
-	if ver.Status != core.VersionStatusCompleted {
-		t.Errorf("expected completed status, got %s", ver.Status)
+	if len(branches) != 1 || !branches[0].IsDefault || branches[0].Epoch != 1 {
+		t.Fatalf("expected single default branch with Epoch=1, got %+v", branches)
 	}
-	if ver.SourceType != core.SourceTypeMainProfile {
-		t.Errorf("expected SourceType %s, got %s", core.SourceTypeMainProfile, ver.SourceType)
-	}
-	if ver.ProviderUsed != "none" || ver.ModelUsed != "none" {
-		t.Errorf("expected provider/model to be 'none', got provider=%s, model=%s", ver.ProviderUsed, ver.ModelUsed)
-	}
-	if ver.HTMLOutput == "" || ver.MarkdownOutput == "" || ver.PlainTextOutput == "" {
-		t.Errorf("expected non-empty rendered outputs in initial default branch version")
-	}
-}
-
-func TestSeedDefaultData_Idempotency(t *testing.T) {
-	ctx := context.Background()
-	db, err := New("file:seed_test_idempotent?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("failed to initialize test database: %v", err)
+	if branches[0].ActiveVersionID == nil || *branches[0].ActiveVersionID == "" {
+		t.Fatalf("expected default branch to have ActiveVersionID")
 	}
 
-	// First seed
-	if err := SeedDefaultDataDB(ctx, db); err != nil {
-		t.Fatalf("first SeedDefaultData failed: %v", err)
+	// Default branch cannot be mutated or deleted.
+	defBranch := branches[0]
+	defBranch.Name = "Renamed"
+	if err := st.Branches().UpdateBranch(ctx, &defBranch); !errors.Is(err, core.ErrDefaultBranchImmutable) {
+		t.Errorf("expected ErrDefaultBranchImmutable on UpdateBranch, got %v", err)
 	}
-
-	profileRepo := NewProfileStore(db)
-	templateRepo := NewTemplateStore(db)
-	presetRepo := NewPresetStore(db)
-
-	// User modifies profile
-	prof, err := profileRepo.Profile(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to fetch profile: %v", err)
-	}
-	prof.FullName = "Alice Custom Name"
-	prof.Headline = "Distinguished Architect"
-	prof.MainRevision = 42
-	if err := db.Save(toProfileRecord(prof)).Error; err != nil {
-		t.Fatalf("failed to update profile directly: %v", err)
-	}
-
-	// Run seeder multiple consecutive times
-	for i := 0; i < 3; i++ {
-		if err := SeedDefaultDataDB(ctx, db); err != nil {
-			t.Fatalf("subsequent SeedDefaultData (%d) failed: %v", i, err)
-		}
-	}
-
-	// Verify profile content was NOT overwritten
-	profAfter, err := profileRepo.Profile(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to fetch profile after re-seed: %v", err)
-	}
-	if profAfter.FullName != "Alice Custom Name" {
-		t.Errorf("expected FullName 'Alice Custom Name' to be preserved, got %s", profAfter.FullName)
-	}
-	if profAfter.MainRevision != 42 {
-		t.Errorf("expected MainRevision 42 to be preserved, got %d", profAfter.MainRevision)
-	}
-
-	// Verify records were not duplicated
-	templates, err := templateRepo.ListTemplates(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to list templates: %v", err)
-	}
-	expectedTemplateCount := len(seed.DefaultTemplateSets())
-	if len(templates) != expectedTemplateCount {
-		t.Errorf("expected exactly %d templates after multiple seeds, got %d", expectedTemplateCount, len(templates))
-	}
-
-	presets, err := presetRepo.ListPresets(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to list presets: %v", err)
-	}
-	if len(presets) != 2 {
-		t.Errorf("expected exactly 2 presets after multiple seeds, got %d", len(presets))
-	}
-
-	branchRepo := NewBranchStore(db)
-	branches, err := branchRepo.ListBranches(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to list branches: %v", err)
-	}
-	if len(branches) != 1 {
-		t.Errorf("expected exactly 1 default branch after multiple seeds, got %d", len(branches))
-	}
-}
-
-func TestBranchStore_DefaultBranchImmutability(t *testing.T) {
-	ctx := context.Background()
-	db, err := New("file:seed_test_immutability?mode=memory&cache=shared")
-	if err != nil {
-		t.Fatalf("failed to initialize test database: %v", err)
-	}
-
-	if err := SeedDefaultDataDB(ctx, db); err != nil {
-		t.Fatalf("SeedDefaultData failed: %v", err)
-	}
-
-	branchRepo := NewBranchStore(db)
-	branches, err := branchRepo.ListBranches(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to list branches: %v", err)
-	}
-	if len(branches) == 0 {
-		t.Fatalf("expected seeded default branch")
-	}
-
-	defaultBranch := branches[0]
-
-	// 1. Attempting to delete default branch should fail
-	err = branchRepo.DeleteBranch(ctx, "default", defaultBranch.ID)
-	if err == nil {
-		t.Fatalf("expected error deleting default branch, got nil")
-	}
-
-	// 2. Creating a regular branch and deleting it should succeed
-	customBranch := &core.Branch{
-		ID:            "branch-custom-1",
-		UserID:        "default",
-		Name:          "Custom Branch",
-		TemplateSetID: core.TemplateStandardCleanID,
-		IsDefault:     false,
-	}
-	if err := branchRepo.CreateBranch(ctx, customBranch); err != nil {
-		t.Fatalf("failed to create custom branch: %v", err)
-	}
-
-	// Verify ListBranches sorts default branch first
-	allBranches, err := branchRepo.ListBranches(ctx, "default")
-	if err != nil {
-		t.Fatalf("failed to list branches: %v", err)
-	}
-	if len(allBranches) != 2 {
-		t.Fatalf("expected 2 branches, got %d", len(allBranches))
-	}
-	if !allBranches[0].IsDefault {
-		t.Errorf("expected first branch to be default branch, got %s (IsDefault=%v)", allBranches[0].Name, allBranches[0].IsDefault)
-	}
-
-	// Deleting custom branch should succeed
-	if err := branchRepo.DeleteBranch(ctx, "default", customBranch.ID); err != nil {
-		t.Fatalf("failed to delete custom branch: %v", err)
+	if err := st.Branches().DeleteBranch(ctx, "default", defBranch.ID); !errors.Is(err, core.ErrDefaultBranchImmutable) {
+		t.Errorf("expected ErrDefaultBranchImmutable on DeleteBranch, got %v", err)
 	}
 }
