@@ -1355,14 +1355,27 @@ func TestQuotaStore_ReserveCommitRelease(t *testing.T) {
 		t.Fatalf("expected ErrQuotaExceeded, got: %v", err)
 	}
 
-	// 5. Commit usage for rec1 with reconciliation
-	usage := core.TokenUsage{PromptTokens: 800, CompletionTokens: 1400, TotalTokens: 2200}
-	if err := quotaRepo.CommitUsage(ctx, rec.ID, usage); err != nil {
+	// 5. Commit usage for rec1 with reconciliation and call telemetry
+	commitTelemetry := core.LLMTelemetry{
+		Provider:   "openai",
+		Model:      "gpt-4o",
+		StatusCode: 200,
+		Latency:    1500 * time.Millisecond,
+		Usage:      core.TokenUsage{PromptTokens: 800, CompletionTokens: 1400, TotalTokens: 2200},
+	}
+	if err := quotaRepo.CommitUsage(ctx, rec.ID, commitTelemetry); err != nil {
 		t.Fatalf("failed to commit usage: %v", err)
 	}
 
-	// 6. Release reservation for rec2 (e.g. failure)
-	if err := quotaRepo.ReleaseQuota(ctx, rec2.ID, "llm timed out"); err != nil {
+	// 6. Release reservation for rec2 (e.g. upstream failure with partial telemetry)
+	releaseTelemetry := core.LLMTelemetry{
+		Provider:   "anthropic",
+		Model:      "claude-sonnet",
+		StatusCode: 504,
+		Latency:    30 * time.Second,
+		Usage:      core.TokenUsage{PromptTokens: 120},
+	}
+	if err := quotaRepo.ReleaseQuota(ctx, rec2.ID, "llm timed out", releaseTelemetry); err != nil {
 		t.Fatalf("failed to release quota: %v", err)
 	}
 
@@ -1376,6 +1389,192 @@ func TestQuotaStore_ReserveCommitRelease(t *testing.T) {
 	}
 	if quotaAfter.MonthlyTokensUsed != 2200 {
 		t.Errorf("expected 2200 tokens used after commit, got %d", quotaAfter.MonthlyTokensUsed)
+	}
+
+	// 8. Verify persisted telemetry round-trips through ListUsageRecords
+	records, err := quotaRepo.ListUsageRecords(ctx, userID, 10)
+	if err != nil {
+		t.Fatalf("failed to list usage records: %v", err)
+	}
+	byID := make(map[string]core.LLMUsageRecord, len(records))
+	for _, r := range records {
+		byID[r.ID] = r
+	}
+
+	committed, ok := byID[rec.ID]
+	if !ok {
+		t.Fatalf("committed record %q not found in %+v", rec.ID, records)
+	}
+	assertUsageTelemetry(t, committed, core.ReservationStatusCommitted, commitTelemetry.Normalize())
+	if committed.CommittedAt == nil {
+		t.Error("expected committed record to have CommittedAt set")
+	}
+
+	released, ok := byID[rec2.ID]
+	if !ok {
+		t.Fatalf("released record %q not found in %+v", rec2.ID, records)
+	}
+	// Normalize backfills TotalTokens from prompt+completion counters on partial usage.
+	assertUsageTelemetry(t, released, core.ReservationStatusReleased, releaseTelemetry.Normalize())
+	if released.TotalTokens != 120 {
+		t.Errorf("expected normalized total tokens 120 on released record, got %d", released.TotalTokens)
+	}
+	if released.ErrorMessage != "llm timed out" {
+		t.Errorf("expected release error message %q, got %q", "llm timed out", released.ErrorMessage)
+	}
+}
+
+func TestQuotaStore_TelemetryNormalizationAndTerminalImmutability(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:quota_telemetry_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	quotaRepo := NewQuotaStore(db)
+	userID := "user-quota-telemetry"
+
+	rec, err := quotaRepo.ReserveQuota(ctx, userID, core.OperationPDFParse, 1000, 5, 10000)
+	if err != nil {
+		t.Fatalf("failed to reserve quota: %v", err)
+	}
+
+	// Negative metadata and counters must be clamped to zero before persisting.
+	negative := core.LLMTelemetry{
+		Provider:   "gemini",
+		Model:      "gemini-pro",
+		StatusCode: -1,
+		Latency:    -time.Second,
+		Usage:      core.TokenUsage{PromptTokens: -5, CompletionTokens: 40},
+	}
+	if err := quotaRepo.CommitUsage(ctx, rec.ID, negative); err != nil {
+		t.Fatalf("failed to commit usage: %v", err)
+	}
+
+	// A second terminal transition must not overwrite committed telemetry.
+	if err := quotaRepo.ReleaseQuota(ctx, rec.ID, "late release", core.LLMTelemetry{Provider: "other", StatusCode: 500}); err != nil {
+		t.Fatalf("expected idempotent release on committed record, got %v", err)
+	}
+
+	records, err := quotaRepo.ListUsageRecords(ctx, userID, 10)
+	if err != nil {
+		t.Fatalf("failed to list usage records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 usage record, got %d", len(records))
+	}
+	got := records[0]
+	assertUsageTelemetry(t, got, core.ReservationStatusCommitted, negative.Normalize())
+	if got.StatusCode != 0 || got.Latency != 0 || got.PromptTokens != 0 {
+		t.Errorf("expected clamped status/latency/prompt tokens, got status=%d latency=%v prompt=%d", got.StatusCode, got.Latency, got.PromptTokens)
+	}
+	if got.ErrorMessage != "" {
+		t.Errorf("expected committed record error message to remain empty, got %q", got.ErrorMessage)
+	}
+
+	if err := quotaRepo.CommitUsage(ctx, "", core.LLMTelemetry{}); !errors.Is(err, core.ErrValidation) {
+		t.Errorf("expected ErrValidation for empty reservation id on commit, got %v", err)
+	}
+	if err := quotaRepo.ReleaseQuota(ctx, "", "reason", core.LLMTelemetry{}); !errors.Is(err, core.ErrValidation) {
+		t.Errorf("expected ErrValidation for empty reservation id on release, got %v", err)
+	}
+}
+
+// legacyLLMUsageRecord mirrors the pre-telemetry llm_usage_records GORM model so migration tests
+// start from the exact schema that earlier releases created.
+type legacyLLMUsageRecord struct {
+	ID               string                 `gorm:"primaryKey;type:text"`
+	UserID           string                 `gorm:"index;not null"`
+	Operation        core.LLMOperationType  `gorm:"not null"`
+	EstimatedTokens  int                    `gorm:"not null"`
+	PromptTokens     int                    `gorm:"not null;default:0"`
+	CompletionTokens int                    `gorm:"not null;default:0"`
+	TotalTokens      int                    `gorm:"not null;default:0"`
+	Status           core.ReservationStatus `gorm:"index;not null;default:'pending'"`
+	ErrorMessage     string
+	CreatedAt        time.Time `gorm:"index"`
+	CommittedAt      *time.Time
+}
+
+// TableName maps legacyLLMUsageRecord onto the production llm_usage_records table.
+func (legacyLLMUsageRecord) TableName() string {
+	return "llm_usage_records"
+}
+
+func TestAutoMigrate_AddsTelemetryColumnsToLegacyUsageTable(t *testing.T) {
+	ctx := context.Background()
+	db, err := New("file:quota_legacy_migration_test?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Recreate the pre-telemetry llm_usage_records schema with an existing pending row.
+	if err := db.Migrator().DropTable(&llmUsageRecord{}); err != nil {
+		t.Fatalf("failed to drop usage table: %v", err)
+	}
+	if err := db.Migrator().CreateTable(&legacyLLMUsageRecord{}); err != nil {
+		t.Fatalf("failed to create legacy usage table: %v", err)
+	}
+	legacyRow := &legacyLLMUsageRecord{
+		ID:              "res-legacy",
+		UserID:          "user-legacy",
+		Operation:       core.OperationPDFParse,
+		EstimatedTokens: 500,
+		Status:          core.ReservationStatusPending,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := db.WithContext(ctx).Create(legacyRow).Error; err != nil {
+		t.Fatalf("failed to insert legacy usage row: %v", err)
+	}
+
+	if err := AutoMigrate(ctx, db); err != nil {
+		t.Fatalf("failed to auto-migrate legacy schema: %v", err)
+	}
+	for _, column := range []string{"provider", "model", "status_code", "latency_ns"} {
+		if !db.Migrator().HasColumn(&llmUsageRecord{}, column) {
+			t.Errorf("expected migrated llm_usage_records to have column %q", column)
+		}
+	}
+
+	quotaRepo := NewQuotaStore(db)
+	legacy, err := quotaRepo.ListUsageRecords(ctx, "user-legacy", 10)
+	if err != nil {
+		t.Fatalf("failed to list legacy usage records: %v", err)
+	}
+	if len(legacy) != 1 || legacy[0].Provider != "" || legacy[0].StatusCode != 0 || legacy[0].Latency != 0 {
+		t.Fatalf("expected legacy row with zero-valued telemetry defaults, got %+v", legacy)
+	}
+
+	telemetry := core.LLMTelemetry{Provider: "ollama", Model: "llama3", StatusCode: 200, Latency: 250 * time.Millisecond, Usage: core.TokenUsage{TotalTokens: 480}}
+	if err := quotaRepo.ReleaseQuota(ctx, "res-legacy", "upstream parse failed", telemetry); err != nil {
+		t.Fatalf("failed to release legacy reservation: %v", err)
+	}
+	updated, err := quotaRepo.ListUsageRecords(ctx, "user-legacy", 10)
+	if err != nil {
+		t.Fatalf("failed to list updated usage records: %v", err)
+	}
+	if len(updated) != 1 {
+		t.Fatalf("expected 1 updated usage record, got %d", len(updated))
+	}
+	assertUsageTelemetry(t, updated[0], core.ReservationStatusReleased, telemetry.Normalize())
+}
+
+// assertUsageTelemetry verifies that got carries the wanted terminal status, provider identity, and normalized token counters.
+func assertUsageTelemetry(t *testing.T, got core.LLMUsageRecord, wantStatus core.ReservationStatus, want core.LLMTelemetry) {
+	t.Helper()
+	if got.Status != wantStatus {
+		t.Errorf("record %s: expected status %q, got %q", got.ID, wantStatus, got.Status)
+	}
+	if got.Provider != want.Provider || got.Model != want.Model {
+		t.Errorf("record %s: expected provider/model %q/%q, got %q/%q", got.ID, want.Provider, want.Model, got.Provider, got.Model)
+	}
+	if got.StatusCode != want.StatusCode {
+		t.Errorf("record %s: expected status code %d, got %d", got.ID, want.StatusCode, got.StatusCode)
+	}
+	if got.Latency != want.Latency {
+		t.Errorf("record %s: expected latency %v, got %v", got.ID, want.Latency, got.Latency)
+	}
+	if got.PromptTokens != want.Usage.PromptTokens || got.CompletionTokens != want.Usage.CompletionTokens || got.TotalTokens != want.Usage.TotalTokens {
+		t.Errorf("record %s: expected tokens %+v, got prompt=%d completion=%d total=%d", got.ID, want.Usage, got.PromptTokens, got.CompletionTokens, got.TotalTokens)
 	}
 }
 
