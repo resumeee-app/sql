@@ -13,17 +13,25 @@ import (
 
 // pdfParseJobRecord is the GORM persistence model for core.PDFParseJob.
 type pdfParseJobRecord struct {
-	ID           string                 `gorm:"primaryKey;type:text"`
-	UserID       string                 `gorm:"index;not null"`
-	Status       core.PDFParseJobStatus `gorm:"index;not null"`
-	Filename     string
-	Provider     string
-	Model        string
-	Result       *core.JSONResume `gorm:"serializer:json"`
-	ErrorMessage string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	CompletedAt  *time.Time
+	ID             string                 `gorm:"primaryKey;type:text"`
+	UserID         string                 `gorm:"index;not null"`
+	Status         core.PDFParseJobStatus `gorm:"index;not null"`
+	Filename       string
+	Provider       string
+	Model          string
+	RawText        string
+	ReservationID  string
+	Result         *core.JSONResume `gorm:"serializer:json"`
+	ErrorMessage   string
+	AttemptCount   int
+	ClaimedBy      string `gorm:"index"`
+	ClaimedAt      *time.Time
+	LeaseExpiresAt *time.Time `gorm:"index"`
+	NextRetryAt    *time.Time `gorm:"index"`
+	ExpiresAt      *time.Time `gorm:"index"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CompletedAt    *time.Time
 }
 
 // TableName overrides the GORM table name to pdf_parse_jobs.
@@ -36,17 +44,25 @@ func toPDFParseJobRecord(j *core.PDFParseJob) *pdfParseJobRecord {
 		return nil
 	}
 	return &pdfParseJobRecord{
-		ID:           j.ID,
-		UserID:       j.UserID,
-		Status:       j.Status,
-		Filename:     j.Filename,
-		Provider:     j.Provider,
-		Model:        j.Model,
-		Result:       j.Result,
-		ErrorMessage: j.ErrorMessage,
-		CreatedAt:    j.CreatedAt,
-		UpdatedAt:    j.UpdatedAt,
-		CompletedAt:  j.CompletedAt,
+		ID:             j.ID,
+		UserID:         j.UserID,
+		Status:         j.Status,
+		Filename:       j.Filename,
+		Provider:       j.Provider,
+		Model:          j.Model,
+		RawText:        j.RawText,
+		ReservationID:  j.ReservationID,
+		Result:         j.Result,
+		ErrorMessage:   j.ErrorMessage,
+		AttemptCount:   j.AttemptCount,
+		ClaimedBy:      j.ClaimedBy,
+		ClaimedAt:      j.ClaimedAt,
+		LeaseExpiresAt: j.LeaseExpiresAt,
+		NextRetryAt:    j.NextRetryAt,
+		ExpiresAt:      j.ExpiresAt,
+		CreatedAt:      j.CreatedAt,
+		UpdatedAt:      j.UpdatedAt,
+		CompletedAt:    j.CompletedAt,
 	}
 }
 
@@ -55,17 +71,25 @@ func toCorePDFParseJob(r *pdfParseJobRecord) *core.PDFParseJob {
 		return nil
 	}
 	return &core.PDFParseJob{
-		ID:           r.ID,
-		UserID:       r.UserID,
-		Status:       r.Status,
-		Filename:     r.Filename,
-		Provider:     r.Provider,
-		Model:        r.Model,
-		Result:       r.Result,
-		ErrorMessage: r.ErrorMessage,
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		CompletedAt:  r.CompletedAt,
+		ID:             r.ID,
+		UserID:         r.UserID,
+		Status:         r.Status,
+		Filename:       r.Filename,
+		Provider:       r.Provider,
+		Model:          r.Model,
+		RawText:        r.RawText,
+		ReservationID:  r.ReservationID,
+		Result:         r.Result,
+		ErrorMessage:   r.ErrorMessage,
+		AttemptCount:   r.AttemptCount,
+		ClaimedBy:      r.ClaimedBy,
+		ClaimedAt:      r.ClaimedAt,
+		LeaseExpiresAt: r.LeaseExpiresAt,
+		NextRetryAt:    r.NextRetryAt,
+		ExpiresAt:      r.ExpiresAt,
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
+		CompletedAt:    r.CompletedAt,
 	}
 }
 
@@ -131,6 +155,9 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 		if err := tx.Where("id = ?", jobID).First(&rec).Error; err != nil {
 			return mapError(err)
 		}
+		if rec.Status.IsTerminal() {
+			return fmt.Errorf("%w: cannot transition terminal job %s from %s to %s", core.ErrConflict, jobID, rec.Status, status)
+		}
 
 		now := time.Now().UTC()
 		rec.Status = status
@@ -141,8 +168,11 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 		if result != nil {
 			rec.Result = result
 		}
-		if status == core.PDFParseJobStatusCompleted || status == core.PDFParseJobStatusFailed {
+		if status.IsTerminal() {
+			rec.RawText = ""
 			rec.CompletedAt = &now
+			rec.LeaseExpiresAt = nil
+			rec.NextRetryAt = nil
 		}
 
 		if err := tx.Save(&rec).Error; err != nil {
@@ -154,12 +184,15 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 
 // FailInterruptedJobs marks all pending and processing jobs as failed with the given reason upon server restart.
 func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	updates := map[string]any{
-		"status":        core.PDFParseJobStatusFailed,
-		"error_message": reason,
-		"updated_at":    now,
-		"completed_at":  &now,
+		"status":           core.PDFParseJobStatusFailed,
+		"error_message":    reason,
+		"raw_text":         "",
+		"updated_at":       now,
+		"completed_at":     &now,
+		"lease_expires_at": nil,
+		"next_retry_at":    nil,
 	}
 
 	err := s.db.WithContext(ctx).
@@ -176,7 +209,7 @@ func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) er
 	return nil
 }
 
-// CleanupCompletedJobs purges completed or failed PDF parse jobs older than the retention threshold.
+// CleanupCompletedJobs purges completed, failed, or cancelled PDF parse jobs older than the retention threshold.
 func (s *PDFJobStore) CleanupCompletedJobs(ctx context.Context, userID string, olderThan time.Duration) error {
 	if userID == "" {
 		return fmt.Errorf("%w: user id cannot be empty", core.ErrValidation)
@@ -185,7 +218,7 @@ func (s *PDFJobStore) CleanupCompletedJobs(ctx context.Context, userID string, o
 	err := s.db.WithContext(ctx).
 		Where("user_id = ? AND status IN ? AND (completed_at < ? OR (completed_at IS NULL AND updated_at < ?))",
 			userID,
-			[]core.PDFParseJobStatus{core.PDFParseJobStatusCompleted, core.PDFParseJobStatusFailed},
+			[]core.PDFParseJobStatus{core.PDFParseJobStatusCompleted, core.PDFParseJobStatusFailed, core.PDFParseJobStatusCancelled},
 			cutoff, cutoff,
 		).
 		Delete(&pdfParseJobRecord{}).Error

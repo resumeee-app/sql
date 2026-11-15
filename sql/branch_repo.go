@@ -137,6 +137,7 @@ type branchVersionRecord struct {
 	ModelUsed          string                `gorm:"column:model_used"`
 	SourceType         core.SourceType       `gorm:"column:source_type"`
 	ParentVersionID    *string               `gorm:"index"`
+	ReservationID      string                `gorm:"column:reservation_id"`
 	TailoredContent    *core.TailoredContent `gorm:"serializer:json"`
 	GapReport          *core.GapReport       `gorm:"serializer:json"`
 	ATSScore           *core.ATSScore        `gorm:"serializer:json"`
@@ -145,7 +146,14 @@ type branchVersionRecord struct {
 	HTMLOutput         string                `gorm:"column:html_output"`
 	MarkdownOutput     string                `gorm:"column:markdown_output"`
 	PlainTextOutput    string                `gorm:"column:plain_text_output"`
+	AttemptCount       int                   `gorm:"column:attempt_count"`
+	ClaimedBy          string                `gorm:"column:claimed_by;index"`
+	ClaimedAt          *time.Time            `gorm:"column:claimed_at"`
+	LeaseExpiresAt     *time.Time            `gorm:"column:lease_expires_at;index"`
+	NextRetryAt        *time.Time            `gorm:"column:next_retry_at;index"`
+	ExpiresAt          *time.Time            `gorm:"column:expires_at;index"`
 	CreatedAt          time.Time
+	UpdatedAt          time.Time
 	CompletedAt        *time.Time
 }
 
@@ -183,6 +191,7 @@ func toBranchVersionRecord(v *core.BranchVersion) *branchVersionRecord {
 		ModelUsed:          v.ModelUsed,
 		SourceType:         v.SourceType,
 		ParentVersionID:    v.ParentVersionID,
+		ReservationID:      v.ReservationID,
 		TailoredContent:    v.TailoredContent,
 		GapReport:          v.GapReport,
 		ATSScore:           v.ATSScore,
@@ -191,7 +200,14 @@ func toBranchVersionRecord(v *core.BranchVersion) *branchVersionRecord {
 		HTMLOutput:         v.HTMLOutput,
 		MarkdownOutput:     v.MarkdownOutput,
 		PlainTextOutput:    v.PlainTextOutput,
+		AttemptCount:       v.AttemptCount,
+		ClaimedBy:          v.ClaimedBy,
+		ClaimedAt:          v.ClaimedAt,
+		LeaseExpiresAt:     v.LeaseExpiresAt,
+		NextRetryAt:        v.NextRetryAt,
+		ExpiresAt:          v.ExpiresAt,
 		CreatedAt:          v.CreatedAt,
+		UpdatedAt:          v.UpdatedAt,
 		CompletedAt:        v.CompletedAt,
 	}
 }
@@ -214,6 +230,7 @@ func toCoreBranchVersion(r *branchVersionRecord) *core.BranchVersion {
 		ModelUsed:          r.ModelUsed,
 		SourceType:         r.SourceType,
 		ParentVersionID:    r.ParentVersionID,
+		ReservationID:      r.ReservationID,
 		TailoredContent:    r.TailoredContent,
 		GapReport:          r.GapReport,
 		ATSScore:           r.ATSScore,
@@ -222,7 +239,14 @@ func toCoreBranchVersion(r *branchVersionRecord) *core.BranchVersion {
 		HTMLOutput:         r.HTMLOutput,
 		MarkdownOutput:     r.MarkdownOutput,
 		PlainTextOutput:    r.PlainTextOutput,
+		AttemptCount:       r.AttemptCount,
+		ClaimedBy:          r.ClaimedBy,
+		ClaimedAt:          r.ClaimedAt,
+		LeaseExpiresAt:     r.LeaseExpiresAt,
+		NextRetryAt:        r.NextRetryAt,
+		ExpiresAt:          r.ExpiresAt,
 		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
 		CompletedAt:        r.CompletedAt,
 	}
 	_ = v.Normalize()
@@ -438,22 +462,28 @@ func (s *BranchStore) ListVersions(ctx context.Context, branchID string) ([]core
 
 // UpdateVersionStatus updates status and error diagnostic message for a version.
 func (s *BranchStore) UpdateVersionStatus(ctx context.Context, versionID string, status core.VersionStatus, errMsg string) error {
-	updates := map[string]any{
-		"status":        status,
-		"error_message": errMsg,
-	}
-	if status == core.VersionStatusCompleted || status == core.VersionStatusCompletedWithWarnings || status == core.VersionStatusFailed {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing branchVersionRecord
+		if err := tx.Where("id = ?", versionID).First(&existing).Error; err != nil {
+			return mapError(err)
+		}
+		if existing.Status.IsTerminal() {
+			return fmt.Errorf("%w: cannot transition terminal version from %s to %s", core.ErrConflict, existing.Status, status)
+		}
+
 		now := time.Now().UTC()
-		updates["completed_at"] = &now
-	}
-	res := s.db.WithContext(ctx).Model(&branchVersionRecord{}).Where("id = ?", versionID).Updates(updates)
-	if res.Error != nil {
-		return mapError(res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return core.ErrNotFound
-	}
-	return nil
+		updates := map[string]any{
+			"status":        status,
+			"error_message": errMsg,
+			"updated_at":    now,
+		}
+		if status.IsTerminal() {
+			updates["completed_at"] = &now
+			updates["lease_expires_at"] = nil
+			updates["next_retry_at"] = nil
+		}
+		return mapError(tx.Model(&branchVersionRecord{}).Where("id = ?", versionID).Updates(updates).Error)
+	})
 }
 
 // CompleteVersion saves completed outputs and advances the parent branch active_version_id and last_synced_main_revision.
@@ -465,45 +495,118 @@ func (s *BranchStore) CompleteVersion(ctx context.Context, version *core.BranchV
 		_ = version.Normalize()
 		parentID := version.ResumeID
 
-		now := time.Now().UTC()
-		version.CompletedAt = &now
-		if version.Status == "" {
-			version.Status = core.VersionStatusCompleted
+		var br branchRecord
+		if err := tx.Where("id = ?", parentID).First(&br).Error; err != nil {
+			return mapError(err)
 		}
-		if err := tx.Save(toBranchVersionRecord(version)).Error; err != nil {
+		existing, exists, err := validateVersionCompletionTx(tx, &br, version)
+		if err != nil {
 			return err
 		}
 
-		// Update active version pointer, last synced revision, and gap report on parent branch
-		updates := map[string]any{
-			"active_version_id":         version.ID,
-			"last_synced_main_revision": version.MainRevisionUsed,
-			"updated_at":                now,
-		}
-		if version.GapReport != nil {
-			raw, err := json.Marshal(version.GapReport)
-			if err != nil {
-				return fmt.Errorf("failed to marshal gap report: %w", err)
-			}
-			updates["gap_report"] = string(raw)
-		} else {
-			updates["gap_report"] = nil
+		now := time.Now().UTC()
+		prepareCompletedVersion(version, &br, existing, exists, now)
+		if err := tx.Save(toBranchVersionRecord(version)).Error; err != nil {
+			return mapError(err)
 		}
 
-		if version.ATSScore != nil {
-			rawATS, err := json.Marshal(version.ATSScore)
-			if err != nil {
-				return fmt.Errorf("failed to marshal ats score: %w", err)
-			}
-			updates["ats_score"] = string(rawATS)
-		} else {
-			updates["ats_score"] = nil
+		updates, err := buildBranchSyncUpdates(version, now)
+		if err != nil {
+			return err
 		}
-
-		return tx.Model(&branchRecord{}).
-			Where("id = ?", parentID).
-			Updates(updates).Error
+		return mapError(tx.Model(&branchRecord{}).Where("id = ?", parentID).Updates(updates).Error)
 	})
+}
+
+// validateVersionCompletionTx enforces non-resurrection, lease ownership, and monotonic active-version checks.
+func validateVersionCompletionTx(tx *gorm.DB, br *branchRecord, version *core.BranchVersion) (*branchVersionRecord, bool, error) {
+	var existing branchVersionRecord
+	err := tx.Where("id = ?", version.ID).First(&existing).Error
+	exists := err == nil
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, mapError(err)
+	}
+
+	if exists && (existing.Status == core.VersionStatusFailed || existing.Status == core.VersionStatusCancelled) {
+		return nil, false, fmt.Errorf("%w: cannot complete terminal version %s in %s state", core.ErrConflict, version.ID, existing.Status)
+	}
+	if version.ClaimedBy != "" {
+		if !exists || existing.Status != core.VersionStatusProcessing || existing.ClaimedBy != version.ClaimedBy {
+			return nil, false, fmt.Errorf("%w: version %s is not actively claimed by %q", core.ErrLeaseExpired, version.ID, version.ClaimedBy)
+		}
+	} else if exists && existing.Status == core.VersionStatusProcessing && existing.ClaimedBy != "" {
+		return nil, false, fmt.Errorf("%w: version %s is actively claimed by %q", core.ErrConflict, version.ID, existing.ClaimedBy)
+	}
+
+	verNum := version.VersionNumber
+	if verNum == 0 && exists {
+		verNum = existing.VersionNumber
+	}
+	if br.ActiveVersionID != nil && *br.ActiveVersionID != "" {
+		var activeVer branchVersionRecord
+		if err := tx.Where("id = ?", *br.ActiveVersionID).First(&activeVer).Error; err == nil && activeVer.VersionNumber > verNum {
+			return nil, false, fmt.Errorf("%w: stale version %d cannot overwrite active version %d", core.ErrConflict, verNum, activeVer.VersionNumber)
+		}
+	}
+	return &existing, exists, nil
+}
+
+// prepareCompletedVersion fills inherited metadata and clears transient lease fields prior to persistence.
+func prepareCompletedVersion(version *core.BranchVersion, br *branchRecord, existing *branchVersionRecord, exists bool, now time.Time) {
+	if exists {
+		if version.VersionNumber == 0 {
+			version.VersionNumber = existing.VersionNumber
+		}
+		if version.UserID == "" {
+			version.UserID = existing.UserID
+		}
+		if version.CreatedAt.IsZero() {
+			version.CreatedAt = existing.CreatedAt
+		}
+	}
+	if version.UserID == "" {
+		version.UserID = br.UserID
+	}
+	if version.CreatedAt.IsZero() {
+		version.CreatedAt = now
+	}
+	if !version.Status.IsCompleted() {
+		version.Status = core.VersionStatusCompleted
+	}
+	if version.CompletedAt == nil || !exists || !existing.Status.IsCompleted() {
+		version.CompletedAt = &now
+	}
+	version.UpdatedAt = now
+	version.ClaimedBy = ""
+	version.LeaseExpiresAt = nil
+	version.NextRetryAt = nil
+}
+
+// buildBranchSyncUpdates constructs the parent branch column updates reflecting a completed version.
+func buildBranchSyncUpdates(version *core.BranchVersion, now time.Time) (map[string]any, error) {
+	updates := map[string]any{
+		"active_version_id":         version.ID,
+		"last_synced_main_revision": version.MainRevisionUsed,
+		"updated_at":                now,
+		"gap_report":                nil,
+		"ats_score":                 nil,
+	}
+	if version.GapReport != nil {
+		// Marshal explicitly because map-based Updates bypasses GORM's serializer tag.
+		raw, err := json.Marshal(version.GapReport)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal gap report: %w", err)
+		}
+		updates["gap_report"] = string(raw)
+	}
+	if version.ATSScore != nil {
+		rawATS, err := json.Marshal(version.ATSScore)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal ats score: %w", err)
+		}
+		updates["ats_score"] = string(rawATS)
+	}
+	return updates, nil
 }
 
 // UpdateVersionATSScore persists an ATS score evaluation on a branch version and propagates it to the parent branch if that version is currently active.
@@ -562,12 +665,15 @@ func (s *BranchStore) UpdateVersionATSScore(ctx context.Context, versionID strin
 // FailInterruptedVersions transitions in-flight pending and processing versions to failed status on recovery.
 func (s *BranchStore) FailInterruptedVersions(ctx context.Context, reason string) error {
 	now := time.Now().UTC()
-	return s.db.WithContext(ctx).
+	return mapError(s.db.WithContext(ctx).
 		Model(&branchVersionRecord{}).
 		Where("status IN ?", []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing}).
 		Updates(map[string]any{
-			"status":        core.VersionStatusFailed,
-			"error_message": reason,
-			"completed_at":  now,
-		}).Error
+			"status":           core.VersionStatusFailed,
+			"error_message":    reason,
+			"updated_at":       now,
+			"completed_at":     &now,
+			"lease_expires_at": nil,
+			"next_retry_at":    nil,
+		}).Error)
 }
