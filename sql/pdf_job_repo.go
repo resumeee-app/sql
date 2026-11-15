@@ -114,7 +114,7 @@ func (s *PDFJobStore) CreateJob(ctx context.Context, job *core.PDFParseJob) erro
 		return fmt.Errorf("%w: job id and user_id are required", core.ErrValidation)
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
 	}
@@ -159,7 +159,7 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 			return fmt.Errorf("%w: cannot transition terminal job %s from %s to %s", core.ErrConflict, jobID, rec.Status, status)
 		}
 
-		now := time.Now().UTC()
+		now := time.Now().UTC().UTC()
 		rec.Status = status
 		rec.UpdatedAt = now
 		if errMsg != "" {
@@ -184,7 +184,7 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 
 // FailInterruptedJobs marks all pending and processing jobs as failed with the given reason upon server restart.
 func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) error {
-	now := time.Now().UTC()
+	now := time.Now().UTC().UTC()
 	updates := map[string]any{
 		"status":           core.PDFParseJobStatusFailed,
 		"error_message":    reason,

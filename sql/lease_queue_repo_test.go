@@ -180,15 +180,16 @@ func TestBranchStoreLeaseAndQueueLifecycle(t *testing.T) {
 	if err := branchRepo.RequeueVersionForRetry(ctx, "ver-4", "worker-1", retryAt, "transient"); err != nil {
 		t.Fatalf("RequeueVersionForRetry: %v", err)
 	}
-	cancelled, err := branchRepo.CancelVersion(ctx, "user-b", "br-3", "ver-4", "user aborted")
-	if err != nil || cancelled.Status != core.VersionStatusCancelled {
-		t.Fatalf("expected cancelled ver-4, got %+v err=%v", cancelled, err)
-	}
 
-	// Claim ver-2 (user-a), then AbortBranchVersions cancels both processing ver-2 and pending ver-3 if on same branch
-	claimed2, err := branchRepo.ClaimNextVersion(ctx, core.ClaimJobRequest{WorkerID: "worker-1", Now: now.Add(5 * time.Second), LeaseDuration: time.Minute})
+	// ClaimNextVersion skips ver-4 while NextRetryAt > Now even if user-b has lower LastServedSeq, claiming ver-2 instead.
+	claimed2, err := branchRepo.ClaimNextVersion(ctx, core.ClaimJobRequest{
+		WorkerID:      "worker-1",
+		Now:           now.Add(5 * time.Second),
+		LeaseDuration: time.Minute,
+		LastServedSeq: map[string]uint64{"user-a": 100, "user-b": 0},
+	})
 	if err != nil || claimed2 == nil || claimed2.ID != "ver-2" {
-		t.Fatalf("expected ver-2 claimed, got %+v err=%v", claimed2, err)
+		t.Fatalf("expected ver-2 claimed while ver-4 is in retry backoff, got %+v err=%v", claimed2, err)
 	}
 	aborted1, err := branchRepo.AbortBranchVersions(ctx, "br-1", "branch deleted")
 	if err != nil || len(aborted1) != 1 || aborted1[0].ReservationID != "res-2" {
@@ -202,6 +203,34 @@ func TestBranchStoreLeaseAndQueueLifecycle(t *testing.T) {
 	sup, err := branchRepo.SupersedePendingVersions(ctx, "br-2", "manual supersede")
 	if err != nil || len(sup) != 1 || sup[0].ReservationID != "res-3" {
 		t.Fatalf("expected res-3 superseded, got %+v err=%v", sup, err)
+	}
+
+	// Only ver-4 remains pending: ClaimNextVersion returns nil before retryAt and claims ver-4 at retryAt with AttemptCount=2.
+	earlyClaim, err := branchRepo.ClaimNextVersion(ctx, core.ClaimJobRequest{
+		WorkerID: "worker-2", Now: retryAt.Add(-time.Second), LeaseDuration: time.Minute,
+	})
+	if err != nil || earlyClaim != nil {
+		t.Fatalf("expected nil claim before NextRetryAt, got %+v err=%v", earlyClaim, err)
+	}
+	reclaimed, err := branchRepo.ClaimNextVersion(ctx, core.ClaimJobRequest{
+		WorkerID: "worker-2", Now: retryAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || reclaimed == nil || reclaimed.ID != "ver-4" || reclaimed.AttemptCount != 2 {
+		t.Fatalf("expected ver-4 reclaimed at NextRetryAt with AttemptCount=2, got %+v err=%v", reclaimed, err)
+	}
+	if err := branchRepo.FailClaimedVersion(ctx, "ver-4", "worker-2", "final failure"); err != nil {
+		t.Fatalf("FailClaimedVersion: %v", err)
+	}
+
+	// CancelVersion succeeds on an owned pending version.
+	if _, err := branchRepo.SubmitPendingVersion(ctx, &core.BranchVersion{
+		ID: "ver-cancel", UserID: "user-b", ResumeID: "br-3", ReservationID: "res-cancel",
+	}, core.PendingJobOptions{Now: retryAt}); err != nil {
+		t.Fatalf("SubmitPendingVersion ver-cancel: %v", err)
+	}
+	cancelled, err := branchRepo.CancelVersion(ctx, "user-b", "br-3", "ver-cancel", "user aborted")
+	if err != nil || cancelled.Status != core.VersionStatusCancelled {
+		t.Fatalf("expected cancelled ver-cancel, got %+v err=%v", cancelled, err)
 	}
 }
 
@@ -282,19 +311,56 @@ func TestBranchStoreExpiryAndRecovery(t *testing.T) {
 		t.Fatalf("expected res-proc released on lease expiry, got rel=%v err=%v", rel, err)
 	}
 
-	// RecoverInterruptedVersions preserves valid pending while failing processing
-	_, err = branchRepo.SubmitPendingVersion(ctx, &core.BranchVersion{
-		ID: "ver-valid-pending", UserID: "u1", ResumeID: "br-exp", ExpiresAt: &futureExp,
-	}, core.PendingJobOptions{Now: now})
-	if err != nil {
+	// RecoverInterruptedVersions fails interrupted processing and expired pending while preserving unexpired pending
+	realNow := time.Now().UTC()
+	pastExp = realNow.Add(-time.Minute)
+	futureRecoveryExp := realNow.Add(time.Hour)
+	for _, bID := range []string{"br-int-proc", "br-int-exp"} {
+		if err := branchRepo.CreateBranch(ctx, &core.Branch{ID: bID, UserID: "u1", Name: bID}); err != nil {
+			t.Fatalf("CreateBranch %s: %v", bID, err)
+		}
+	}
+	if _, err := branchRepo.SubmitPendingVersion(ctx, &core.BranchVersion{
+		ID: "ver-int-proc", UserID: "u1", ResumeID: "br-int-proc", ReservationID: "res-int-proc", ExpiresAt: &futureRecoveryExp,
+	}, core.PendingJobOptions{Now: realNow}); err != nil {
+		t.Fatalf("SubmitPendingVersion ver-int-proc: %v", err)
+	}
+	if claimedInt, err := branchRepo.ClaimNextVersion(ctx, core.ClaimJobRequest{
+		WorkerID: "w-int", Now: realNow, LeaseDuration: time.Hour,
+	}); err != nil || claimedInt == nil || claimedInt.ID != "ver-int-proc" {
+		t.Fatalf("expected ver-int-proc claimed, got %+v err=%v", claimedInt, err)
+	}
+	if _, err := branchRepo.SubmitPendingVersion(ctx, &core.BranchVersion{
+		ID: "ver-int-exp", UserID: "u1", ResumeID: "br-int-exp", ReservationID: "res-int-exp", ExpiresAt: &pastExp,
+	}, core.PendingJobOptions{Now: realNow.Add(-2 * time.Minute)}); err != nil {
+		t.Fatalf("SubmitPendingVersion ver-int-exp: %v", err)
+	}
+	if _, err := branchRepo.SubmitPendingVersion(ctx, &core.BranchVersion{
+		ID: "ver-valid-pending", UserID: "u1", ResumeID: "br-exp", ExpiresAt: &futureRecoveryExp,
+	}, core.PendingJobOptions{Now: realNow}); err != nil {
 		t.Fatalf("SubmitPendingVersion ver-valid-pending: %v", err)
 	}
-	if _, err := branchRepo.RecoverInterruptedVersions(ctx, "restart"); err != nil {
+
+	recRel, err := branchRepo.RecoverInterruptedVersions(ctx, "restart")
+	if err != nil {
 		t.Fatalf("RecoverInterruptedVersions: %v", err)
 	}
-	gotPending, err := branchRepo.Version(ctx, "br-exp", "ver-valid-pending")
-	if err != nil || gotPending.Status != core.VersionStatusPending {
-		t.Fatalf("expected unexpired pending preserved, got %+v err=%v", gotPending, err)
+	if len(recRel) != 2 {
+		t.Fatalf("expected 2 released reservations from recovery, got %+v", recRel)
+	}
+	for _, idCheck := range []struct {
+		branchID  string
+		versionID string
+		want      core.VersionStatus
+	}{
+		{"br-int-proc", "ver-int-proc", core.VersionStatusFailed},
+		{"br-int-exp", "ver-int-exp", core.VersionStatusFailed},
+		{"br-exp", "ver-valid-pending", core.VersionStatusPending},
+	} {
+		got, err := branchRepo.Version(ctx, idCheck.branchID, idCheck.versionID)
+		if err != nil || got.Status != idCheck.want {
+			t.Fatalf("version %s: got status %+v err=%v, want %s", idCheck.versionID, got, err, idCheck.want)
+		}
 	}
 }
 
@@ -434,17 +500,48 @@ func TestPDFJobStoreLeaseAndQueueLifecycle(t *testing.T) {
 		t.Fatalf("expected res-lease-exp released on FailExpiredJobLeases, got rel=%v err=%v", rel, err)
 	}
 
-	futureExp := time.Now().UTC().Add(time.Hour)
+	realNow := time.Now().UTC()
+	pastExp = realNow.Add(-time.Minute)
+	futureExp := realNow.Add(time.Hour)
+	if err := pdfRepo.SubmitPendingJob(ctx, &core.PDFParseJob{
+		ID: "pdf-int-proc", UserID: "user-2", RawText: "secret", ReservationID: "res-pdf-int-proc", ExpiresAt: &futureExp,
+	}, core.PendingJobOptions{Now: realNow}); err != nil {
+		t.Fatalf("SubmitPendingJob pdf-int-proc: %v", err)
+	}
+	if claimedInt, err := pdfRepo.ClaimNextJob(ctx, core.ClaimJobRequest{
+		WorkerID: "w-pdf-int", Now: realNow, LeaseDuration: time.Hour,
+	}); err != nil || claimedInt == nil || claimedInt.ID != "pdf-int-proc" {
+		t.Fatalf("expected pdf-int-proc claimed, got %+v err=%v", claimedInt, err)
+	}
+	if err := pdfRepo.SubmitPendingJob(ctx, &core.PDFParseJob{
+		ID: "pdf-int-exp", UserID: "user-2", RawText: "expired", ReservationID: "res-pdf-int-exp", ExpiresAt: &pastExp,
+	}, core.PendingJobOptions{Now: realNow.Add(-2 * time.Minute)}); err != nil {
+		t.Fatalf("SubmitPendingJob pdf-int-exp: %v", err)
+	}
 	if err := pdfRepo.SubmitPendingJob(ctx, &core.PDFParseJob{
 		ID: "pdf-valid", UserID: "user-2", RawText: "keep me", ExpiresAt: &futureExp,
-	}, core.PendingJobOptions{Now: time.Now().UTC()}); err != nil {
+	}, core.PendingJobOptions{Now: realNow}); err != nil {
 		t.Fatalf("SubmitPendingJob pdf-valid: %v", err)
 	}
-	if _, err := pdfRepo.RecoverInterruptedJobs(ctx, "reboot"); err != nil {
+	recRel, err := pdfRepo.RecoverInterruptedJobs(ctx, "reboot")
+	if err != nil {
 		t.Fatalf("RecoverInterruptedJobs: %v", err)
 	}
-	kept, err := pdfRepo.Job(ctx, "user-2", "pdf-valid")
-	if err != nil || kept.Status != core.PDFParseJobStatusPending || kept.RawText != "keep me" {
-		t.Fatalf("expected valid pending job preserved on RecoverInterruptedJobs, got %+v err=%v", kept, err)
+	if len(recRel) != 2 {
+		t.Fatalf("expected 2 released reservations from pdf recovery, got %+v", recRel)
+	}
+	for _, tc := range []struct {
+		jobID    string
+		want     core.PDFParseJobStatus
+		wantText string
+	}{
+		{"pdf-int-proc", core.PDFParseJobStatusFailed, ""},
+		{"pdf-int-exp", core.PDFParseJobStatusFailed, ""},
+		{"pdf-valid", core.PDFParseJobStatusPending, "keep me"},
+	} {
+		got, err := pdfRepo.Job(ctx, "user-2", tc.jobID)
+		if err != nil || got.Status != tc.want || got.RawText != tc.wantText {
+			t.Fatalf("job %s: got %+v err=%v, want status=%s rawText=%q", tc.jobID, got, err, tc.want, tc.wantText)
+		}
 	}
 }

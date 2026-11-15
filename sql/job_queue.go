@@ -51,6 +51,98 @@ func resolvePendingLimits(opts core.PendingJobOptions) (int, int, time.Duration)
 	return maxPerTenant, opts.MaxGlobalPending, ttl
 }
 
+// resolveLeaseDuration returns d when positive, or DefaultLeaseDuration otherwise.
+func resolveLeaseDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return core.DefaultLeaseDuration
+	}
+	return d
+}
+
+// leaseAcquireUpdates builds the shared column map for transitioning a pending item to processing under a worker lease.
+func leaseAcquireUpdates(status any, workerID string, now, leaseExp time.Time) map[string]any {
+	return map[string]any{
+		"status":           status,
+		"claimed_by":       workerID,
+		"claimed_at":       &now,
+		"lease_expires_at": &leaseExp,
+		"next_retry_at":    nil,
+		"attempt_count":    gorm.Expr("attempt_count + 1"),
+		"updated_at":       now,
+	}
+}
+
+// leaseRenewUpdates builds the column map for extending an active worker lease deadline.
+func leaseRenewUpdates(leaseExpiresAt, now time.Time) map[string]any {
+	exp := leaseExpiresAt.UTC()
+	return map[string]any{
+		"lease_expires_at": &exp,
+		"updated_at":       now,
+	}
+}
+
+// leaseRequeueUpdates builds the column map for returning a claimed item to pending with retry backoff.
+func leaseRequeueUpdates(status any, errMsg string, retryAt, now time.Time) map[string]any {
+	return map[string]any{
+		"status":           status,
+		"error_message":    errMsg,
+		"next_retry_at":    &retryAt,
+		"claimed_by":       "",
+		"claimed_at":       nil,
+		"lease_expires_at": nil,
+		"completed_at":     nil,
+		"updated_at":       now,
+	}
+}
+
+// leaseTerminalUpdates builds the column map for transitioning a queued or claimed item into a terminal state.
+func leaseTerminalUpdates(status any, reason string, now time.Time, clearClaim bool, extra map[string]any) map[string]any {
+	updates := map[string]any{
+		"status":           status,
+		"error_message":    reason,
+		"updated_at":       now,
+		"completed_at":     &now,
+		"lease_expires_at": nil,
+		"next_retry_at":    nil,
+	}
+	if clearClaim {
+		updates["claimed_by"] = ""
+		updates["claimed_at"] = nil
+	}
+	for k, v := range extra {
+		updates[k] = v
+	}
+	return updates
+}
+
+// buildReleasedReservation constructs a ReleasedReservation when reservationID is non-empty.
+func buildReleasedReservation(jobID, userID, reservationID, reason string) (core.ReleasedReservation, bool) {
+	if reservationID == "" {
+		return core.ReleasedReservation{}, false
+	}
+	return core.ReleasedReservation{
+		JobID:         jobID,
+		UserID:        userID,
+		ReservationID: reservationID,
+		Reason:        reason,
+	}, true
+}
+
+// collectReleased applies fn to each element of records and gathers any non-empty ReleasedReservation results.
+func collectReleased[T any](tx *gorm.DB, records []T, fn func(*gorm.DB, *T) (core.ReleasedReservation, bool, error)) ([]core.ReleasedReservation, error) {
+	var released []core.ReleasedReservation
+	for i := range records {
+		rel, ok, err := fn(tx, &records[i])
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			released = append(released, rel)
+		}
+	}
+	return released, nil
+}
+
 // selectFairestCandidate picks the winning candidate ordered by LastServedSeq LRU, oldest CreatedAt, then ID.
 func selectFairestCandidate(candidates []claimCandidate, lastServedSeq map[string]uint64) (string, bool) {
 	if len(candidates) == 0 {
@@ -83,18 +175,16 @@ func candidatePrecedes(a claimCandidate, aSeq uint64, b claimCandidate, bSeq uin
 // because a newer submission on the same branch supersedes its existing pending versions.
 func countPendingVersionsTx(tx *gorm.DB, userID, excludeBranchID string, now time.Time) (tenantCount, globalCount int, err error) {
 	var pendingVersions []branchVersionRecord
-	if err := tx.Where("status = ?", core.VersionStatusPending).Find(&pendingVersions).Error; err != nil {
+	if err := tx.Select("user_id, resume_id, branch_id, expires_at").
+		Where("status = ?", core.VersionStatusPending).
+		Find(&pendingVersions).Error; err != nil {
 		return 0, 0, mapError(err)
 	}
 	for _, v := range pendingVersions {
 		if !isPendingUnexpired(v.ExpiresAt, now) {
 			continue
 		}
-		branchID := v.ResumeID
-		if branchID == "" {
-			branchID = v.BranchID
-		}
-		if excludeBranchID != "" && branchID == excludeBranchID {
+		if excludeBranchID != "" && v.effectiveBranchID() == excludeBranchID {
 			continue
 		}
 		globalCount++
@@ -108,7 +198,9 @@ func countPendingVersionsTx(tx *gorm.DB, userID, excludeBranchID string, now tim
 // countPendingPDFJobsTx counts unexpired pending PDF parse jobs globally and for userID.
 func countPendingPDFJobsTx(tx *gorm.DB, userID string, now time.Time) (tenantCount, globalCount int, err error) {
 	var pendingPDFs []pdfParseJobRecord
-	if err := tx.Where("status = ?", core.PDFParseJobStatusPending).Find(&pendingPDFs).Error; err != nil {
+	if err := tx.Select("user_id, expires_at").
+		Where("status = ?", core.PDFParseJobStatusPending).
+		Find(&pendingPDFs).Error; err != nil {
 		return 0, 0, mapError(err)
 	}
 	for _, job := range pendingPDFs {
@@ -148,11 +240,15 @@ func checkPendingAdmissionTx(tx *gorm.DB, userID, excludeBranchID string, opts c
 // and tracks branches with an active processing version so at most one version runs per branch.
 func activeProcessingByTenantTx(tx *gorm.DB, now time.Time) (map[string]int, map[string]bool, map[string]int, error) {
 	var procVersions []branchVersionRecord
-	if err := tx.Where("status = ?", core.VersionStatusProcessing).Find(&procVersions).Error; err != nil {
+	if err := tx.Select("user_id, resume_id, branch_id, lease_expires_at").
+		Where("status = ?", core.VersionStatusProcessing).
+		Find(&procVersions).Error; err != nil {
 		return nil, nil, nil, mapError(err)
 	}
 	var procPDFs []pdfParseJobRecord
-	if err := tx.Where("status = ?", core.PDFParseJobStatusProcessing).Find(&procPDFs).Error; err != nil {
+	if err := tx.Select("user_id, lease_expires_at").
+		Where("status = ?", core.PDFParseJobStatusProcessing).
+		Find(&procPDFs).Error; err != nil {
 		return nil, nil, nil, mapError(err)
 	}
 
@@ -165,11 +261,7 @@ func activeProcessingByTenantTx(tx *gorm.DB, now time.Time) (map[string]int, map
 		if v.UserID != "" {
 			byVersionTenant[v.UserID]++
 		}
-		branchID := v.ResumeID
-		if branchID == "" {
-			branchID = v.BranchID
-		}
-		if branchID != "" {
+		if branchID := v.effectiveBranchID(); branchID != "" {
 			activeBranches[branchID] = true
 		}
 	}

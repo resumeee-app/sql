@@ -2,7 +2,6 @@ package sql
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -110,20 +109,15 @@ func ensureNoActiveBranchLease(existing []branchVersionRecord, branchID string, 
 
 // failExpiredBranchProcessingTx transitions expired processing versions on a branch to failed and collects their reservations.
 func failExpiredBranchProcessingTx(tx *gorm.DB, existing []branchVersionRecord, now time.Time) ([]core.ReleasedReservation, error) {
-	var released []core.ReleasedReservation
-	for i := range existing {
-		ex := &existing[i]
+	var expired []branchVersionRecord
+	for _, ex := range existing {
 		if ex.Status == core.VersionStatusProcessing && !isLeaseUnexpired(ex.LeaseExpiresAt, now) {
-			rel, ok, err := transitionVersionTerminalTx(tx, ex, core.VersionStatusFailed, "worker lease expired", now, false)
-			if err != nil {
-				return nil, err
-			}
-			if ok {
-				released = append(released, rel)
-			}
+			expired = append(expired, ex)
 		}
 	}
-	return released, nil
+	return collectReleased(tx, expired, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+		return transitionVersionTerminalTx(tx, v, core.VersionStatusFailed, "worker lease expired", now, false)
+	})
 }
 
 // insertPendingVersionTx assigns the next monotonic version number, applies default TTL, and inserts the pending record.
@@ -183,22 +177,18 @@ func (s *BranchStore) AbortBranchVersions(ctx context.Context, branchID, reason 
 	var released []core.ReleasedReservation
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var records []branchVersionRecord
-		if err := tx.Where("(resume_id = ? OR branch_id = ?) AND status IN ?",
-			branchID, branchID, []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing},
-		).Find(&records).Error; err != nil {
+		if err := tx.Select("id, user_id, reservation_id").
+			Where("(resume_id = ? OR branch_id = ?) AND status IN ?",
+				branchID, branchID, []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing},
+			).Find(&records).Error; err != nil {
 			return mapError(err)
 		}
 
-		for i := range records {
-			rel, ok, err := transitionVersionTerminalTx(tx, &records[i], core.VersionStatusCancelled, reason, now, true)
-			if err != nil {
-				return err
-			}
-			if ok {
-				released = append(released, rel)
-			}
-		}
-		return nil
+		var txErr error
+		released, txErr = collectReleased(tx, records, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+			return transitionVersionTerminalTx(tx, v, core.VersionStatusCancelled, reason, now, true)
+		})
+		return txErr
 	})
 	if err != nil {
 		return nil, err
@@ -209,7 +199,7 @@ func (s *BranchStore) AbortBranchVersions(ctx context.Context, branchID, reason 
 // CancelVersion cancels an owned pending branch version or returns ErrNotFound/ErrConflict.
 func (s *BranchStore) CancelVersion(ctx context.Context, userID, branchID, versionID, reason string) (*core.BranchVersion, error) {
 	if userID == "" || versionID == "" {
-		return nil, core.ErrValidation
+		return nil, fmt.Errorf("%w: user id and version id are required", core.ErrValidation)
 	}
 
 	var out *core.BranchVersion
@@ -245,14 +235,11 @@ func (s *BranchStore) ClaimNextVersion(ctx context.Context, req core.ClaimJobReq
 	}
 
 	now := resolveNowTime(req.Now)
-	leaseDur := req.LeaseDuration
-	if leaseDur <= 0 {
-		leaseDur = core.DefaultLeaseDuration
-	}
+	leaseDur := resolveLeaseDuration(req.LeaseDuration)
 
 	var out *core.BranchVersion
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		candidates, byID, err := findEligibleVersionCandidatesTx(tx, req, now)
+		candidates, err := findEligibleVersionCandidatesTx(tx, req, now)
 		if err != nil {
 			return err
 		}
@@ -260,7 +247,7 @@ func (s *BranchStore) ClaimNextVersion(ctx context.Context, req core.ClaimJobReq
 		if !ok {
 			return nil
 		}
-		out, err = acquireVersionLeaseTx(tx, byID[winnerID], req.WorkerID, now, leaseDur)
+		out, err = acquireVersionLeaseTx(tx, winnerID, req.WorkerID, now, leaseDur)
 		return err
 	})
 	if err != nil {
@@ -270,10 +257,10 @@ func (s *BranchStore) ClaimNextVersion(ctx context.Context, req core.ClaimJobReq
 }
 
 // findEligibleVersionCandidatesTx gathers claimable pending versions enforcing expiry, backoff, per-branch exclusivity, and tenant concurrency.
-func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time) ([]claimCandidate, map[string]*branchVersionRecord, error) {
+func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time) ([]claimCandidate, error) {
 	byTenant, activeBranches, otherPDFByTenant, err := activeProcessingByTenantTx(tx, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Use persisted PDF lease counts unless the caller supplies an explicit sibling override.
 	otherByTenant := req.OtherActiveByTenant
@@ -282,22 +269,19 @@ func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now 
 	}
 
 	var pending []branchVersionRecord
-	if err := tx.Where("status = ?", core.VersionStatusPending).Find(&pending).Error; err != nil {
-		return nil, nil, mapError(err)
+	if err := tx.Select("id, user_id, resume_id, branch_id, created_at, expires_at, next_retry_at").
+		Where("status = ?", core.VersionStatusPending).
+		Find(&pending).Error; err != nil {
+		return nil, mapError(err)
 	}
 
 	var candidates []claimCandidate
-	byID := make(map[string]*branchVersionRecord, len(pending))
 	for i := range pending {
 		v := &pending[i]
 		if !isPendingUnexpired(v.ExpiresAt, now) || !isRetryReady(v.NextRetryAt, now) {
 			continue
 		}
-		branchID := v.ResumeID
-		if branchID == "" {
-			branchID = v.BranchID
-		}
-		if activeBranches[branchID] {
+		if activeBranches[v.effectiveBranchID()] {
 			continue
 		}
 		if req.MaxConcurrentPerTenant > 0 && byTenant[v.UserID]+otherByTenant[v.UserID] >= req.MaxConcurrentPerTenant {
@@ -308,25 +292,16 @@ func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now 
 			tenantID:  v.UserID,
 			createdAt: v.CreatedAt,
 		})
-		byID[v.ID] = v
 	}
-	return candidates, byID, nil
+	return candidates, nil
 }
 
-// acquireVersionLeaseTx atomically transitions winner from pending to processing under workerID's lease.
-func acquireVersionLeaseTx(tx *gorm.DB, winner *branchVersionRecord, workerID string, now time.Time, leaseDur time.Duration) (*core.BranchVersion, error) {
+// acquireVersionLeaseTx atomically transitions winnerID from pending to processing under workerID's lease.
+func acquireVersionLeaseTx(tx *gorm.DB, winnerID, workerID string, now time.Time, leaseDur time.Duration) (*core.BranchVersion, error) {
 	leaseExp := now.Add(leaseDur)
 	res := tx.Model(&branchVersionRecord{}).
-		Where("id = ? AND status = ?", winner.ID, core.VersionStatusPending).
-		Updates(map[string]any{
-			"status":           core.VersionStatusProcessing,
-			"claimed_by":       workerID,
-			"claimed_at":       &now,
-			"lease_expires_at": &leaseExp,
-			"next_retry_at":    nil,
-			"attempt_count":    gorm.Expr("attempt_count + 1"),
-			"updated_at":       now,
-		})
+		Where("id = ? AND status = ?", winnerID, core.VersionStatusPending).
+		Updates(leaseAcquireUpdates(core.VersionStatusProcessing, workerID, now, leaseExp))
 	if res.Error != nil {
 		return nil, mapError(res.Error)
 	}
@@ -334,40 +309,33 @@ func acquireVersionLeaseTx(tx *gorm.DB, winner *branchVersionRecord, workerID st
 		return nil, nil
 	}
 
-	winner.Status = core.VersionStatusProcessing
-	winner.ClaimedBy = workerID
-	winner.ClaimedAt = &now
-	winner.LeaseExpiresAt = &leaseExp
-	winner.NextRetryAt = nil
-	winner.AttemptCount++
-	winner.UpdatedAt = now
-	return toCoreBranchVersion(winner), nil
+	var winner branchVersionRecord
+	if err := tx.Where("id = ?", winnerID).First(&winner).Error; err != nil {
+		return nil, mapError(err)
+	}
+	return toCoreBranchVersion(&winner), nil
 }
 
 // RenewVersionLease extends an active processing version lease owned by claimedBy.
 func (s *BranchStore) RenewVersionLease(ctx context.Context, versionID, claimedBy string, leaseExpiresAt time.Time) error {
 	if versionID == "" || claimedBy == "" || leaseExpiresAt.IsZero() {
-		return core.ErrValidation
+		return fmt.Errorf("%w: version id, claimed_by, and lease_expires_at are required", core.ErrValidation)
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if _, err := claimedVersionTx(tx, versionID, claimedBy); err != nil {
 			return err
 		}
-		exp := leaseExpiresAt.UTC()
 		return mapError(tx.Model(&branchVersionRecord{}).
 			Where("id = ?", versionID).
-			Updates(map[string]any{
-				"lease_expires_at": &exp,
-				"updated_at":       time.Now().UTC(),
-			}).Error)
+			Updates(leaseRenewUpdates(leaseExpiresAt, time.Now().UTC())).Error)
 	})
 }
 
 // RequeueVersionForRetry returns a claimed processing version to pending for future retry prior to expiration.
 func (s *BranchStore) RequeueVersionForRetry(ctx context.Context, versionID, claimedBy string, nextRetryAt time.Time, errMsg string) error {
 	if versionID == "" || claimedBy == "" || nextRetryAt.IsZero() {
-		return core.ErrValidation
+		return fmt.Errorf("%w: version id, claimed_by, and next_retry_at are required", core.ErrValidation)
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -382,23 +350,14 @@ func (s *BranchStore) RequeueVersionForRetry(ctx context.Context, versionID, cla
 
 		return mapError(tx.Model(&branchVersionRecord{}).
 			Where("id = ?", versionID).
-			Updates(map[string]any{
-				"status":           core.VersionStatusPending,
-				"error_message":    errMsg,
-				"next_retry_at":    &retryAt,
-				"claimed_by":       "",
-				"claimed_at":       nil,
-				"lease_expires_at": nil,
-				"completed_at":     nil,
-				"updated_at":       time.Now().UTC(),
-			}).Error)
+			Updates(leaseRequeueUpdates(core.VersionStatusPending, errMsg, retryAt, time.Now().UTC())).Error)
 	})
 }
 
 // FailClaimedVersion transitions an active claimed version owned by claimedBy to failed.
 func (s *BranchStore) FailClaimedVersion(ctx context.Context, versionID, claimedBy, errMsg string) error {
 	if versionID == "" || claimedBy == "" {
-		return core.ErrValidation
+		return fmt.Errorf("%w: version id and claimed_by are required", core.ErrValidation)
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -418,20 +377,16 @@ func (s *BranchStore) ExpirePendingVersions(ctx context.Context, now time.Time, 
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var pending []branchVersionRecord
-		if err := tx.Where("status = ? AND expires_at IS NOT NULL AND expires_at <= ?", core.VersionStatusPending, ts).
+		if err := tx.Select("id, user_id, reservation_id").
+			Where("status = ? AND expires_at IS NOT NULL AND expires_at <= ?", core.VersionStatusPending, ts).
 			Find(&pending).Error; err != nil {
 			return mapError(err)
 		}
-		for i := range pending {
-			rel, ok, err := transitionVersionTerminalTx(tx, &pending[i], core.VersionStatusFailed, reason, ts, true)
-			if err != nil {
-				return err
-			}
-			if ok {
-				released = append(released, rel)
-			}
-		}
-		return nil
+		var txErr error
+		released, txErr = collectReleased(tx, pending, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+			return transitionVersionTerminalTx(tx, v, core.VersionStatusFailed, reason, ts, true)
+		})
+		return txErr
 	})
 	if err != nil {
 		return nil, err
@@ -446,20 +401,16 @@ func (s *BranchStore) FailExpiredVersionLeases(ctx context.Context, now time.Tim
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var processing []branchVersionRecord
-		if err := tx.Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", core.VersionStatusProcessing, ts).
+		if err := tx.Select("id, user_id, reservation_id").
+			Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", core.VersionStatusProcessing, ts).
 			Find(&processing).Error; err != nil {
 			return mapError(err)
 		}
-		for i := range processing {
-			rel, ok, err := transitionVersionTerminalTx(tx, &processing[i], core.VersionStatusFailed, reason, ts, false)
-			if err != nil {
-				return err
-			}
-			if ok {
-				released = append(released, rel)
-			}
-		}
-		return nil
+		var txErr error
+		released, txErr = collectReleased(tx, processing, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+			return transitionVersionTerminalTx(tx, v, core.VersionStatusFailed, reason, ts, false)
+		})
+		return txErr
 	})
 	if err != nil {
 		return nil, err
@@ -474,21 +425,17 @@ func (s *BranchStore) RecoverInterruptedVersions(ctx context.Context, reason str
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var records []branchVersionRecord
-		if err := tx.Where("status = ? OR (status = ? AND expires_at IS NOT NULL AND expires_at <= ?)",
-			core.VersionStatusProcessing, core.VersionStatusPending, ts,
-		).Find(&records).Error; err != nil {
+		if err := tx.Select("id, user_id, reservation_id").
+			Where("status = ? OR (status = ? AND expires_at IS NOT NULL AND expires_at <= ?)",
+				core.VersionStatusProcessing, core.VersionStatusPending, ts,
+			).Find(&records).Error; err != nil {
 			return mapError(err)
 		}
-		for i := range records {
-			rel, ok, err := transitionVersionTerminalTx(tx, &records[i], core.VersionStatusFailed, reason, ts, false)
-			if err != nil {
-				return err
-			}
-			if ok {
-				released = append(released, rel)
-			}
-		}
-		return nil
+		var txErr error
+		released, txErr = collectReleased(tx, records, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+			return transitionVersionTerminalTx(tx, v, core.VersionStatusFailed, reason, ts, false)
+		})
+		return txErr
 	})
 	if err != nil {
 		return nil, err
@@ -499,30 +446,20 @@ func (s *BranchStore) RecoverInterruptedVersions(ctx context.Context, reason str
 // supersedePendingVersionsTx cancels all pending versions on branchID inside tx and returns any released reservations.
 func supersedePendingVersionsTx(tx *gorm.DB, branchID, reason string, now time.Time) ([]core.ReleasedReservation, error) {
 	var pending []branchVersionRecord
-	if err := tx.Where("(resume_id = ? OR branch_id = ?) AND status = ?", branchID, branchID, core.VersionStatusPending).
+	if err := tx.Select("id, user_id, reservation_id").
+		Where("(resume_id = ? OR branch_id = ?) AND status = ?", branchID, branchID, core.VersionStatusPending).
 		Find(&pending).Error; err != nil {
 		return nil, mapError(err)
 	}
-	var released []core.ReleasedReservation
-	for i := range pending {
-		rel, ok, err := transitionVersionTerminalTx(tx, &pending[i], core.VersionStatusCancelled, reason, now, true)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			released = append(released, rel)
-		}
-	}
-	return released, nil
+	return collectReleased(tx, pending, func(tx *gorm.DB, v *branchVersionRecord) (core.ReleasedReservation, bool, error) {
+		return transitionVersionTerminalTx(tx, v, core.VersionStatusCancelled, reason, now, true)
+	})
 }
 
 // claimedVersionTx loads versionID inside tx and verifies active processing lease ownership by claimedBy.
 func claimedVersionTx(tx *gorm.DB, versionID, claimedBy string) (*branchVersionRecord, error) {
 	var v branchVersionRecord
 	if err := tx.Where("id = ?", versionID).First(&v).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, core.ErrNotFound
-		}
 		return nil, mapError(err)
 	}
 	if v.Status != core.VersionStatusProcessing || v.ClaimedBy != claimedBy {
@@ -533,20 +470,7 @@ func claimedVersionTx(tx *gorm.DB, versionID, claimedBy string) (*branchVersionR
 
 // transitionVersionTerminalTx marks v terminal, clears active lease fields, and emits a ReleasedReservation when present.
 func transitionVersionTerminalTx(tx *gorm.DB, v *branchVersionRecord, status core.VersionStatus, reason string, now time.Time, clearClaim bool) (core.ReleasedReservation, bool, error) {
-	updates := map[string]any{
-		"status":           status,
-		"error_message":    reason,
-		"updated_at":       now,
-		"completed_at":     &now,
-		"lease_expires_at": nil,
-		"next_retry_at":    nil,
-	}
-	if clearClaim {
-		updates["claimed_by"] = ""
-		updates["claimed_at"] = nil
-		v.ClaimedBy = ""
-		v.ClaimedAt = nil
-	}
+	updates := leaseTerminalUpdates(status, reason, now, clearClaim, nil)
 	if err := tx.Model(&branchVersionRecord{}).Where("id = ?", v.ID).Updates(updates).Error; err != nil {
 		return core.ReleasedReservation{}, false, mapError(err)
 	}
@@ -558,14 +482,11 @@ func transitionVersionTerminalTx(tx *gorm.DB, v *branchVersionRecord, status cor
 	v.CompletedAt = &completedAt
 	v.LeaseExpiresAt = nil
 	v.NextRetryAt = nil
-
-	if v.ReservationID == "" {
-		return core.ReleasedReservation{}, false, nil
+	if clearClaim {
+		v.ClaimedBy = ""
+		v.ClaimedAt = nil
 	}
-	return core.ReleasedReservation{
-		JobID:         v.ID,
-		UserID:        v.UserID,
-		ReservationID: v.ReservationID,
-		Reason:        reason,
-	}, true, nil
+
+	rel, ok := buildReleasedReservation(v.ID, v.UserID, v.ReservationID, reason)
+	return rel, ok, nil
 }

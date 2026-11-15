@@ -173,6 +173,14 @@ func (r *branchVersionRecord) Normalize() error {
 	return nil
 }
 
+// effectiveBranchID returns the canonical branch identifier for r, preferring ResumeID over legacy BranchID.
+func (r *branchVersionRecord) effectiveBranchID() string {
+	if r.ResumeID != "" {
+		return r.ResumeID
+	}
+	return r.BranchID
+}
+
 func toBranchVersionRecord(v *core.BranchVersion) *branchVersionRecord {
 	if v == nil {
 		return nil
@@ -643,10 +651,7 @@ func (s *BranchStore) UpdateVersionATSScore(ctx context.Context, versionID strin
 			}
 		}
 
-		parentID := version.ResumeID
-		if parentID == "" {
-			parentID = version.BranchID
-		}
+		parentID := version.effectiveBranchID()
 		if parentID != "" {
 			if err := tx.Model(&branchRecord{}).
 				Where("id = ? AND active_version_id = ?", parentID, versionID).
