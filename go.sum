@@ -19,8 +19,8 @@ github.com/mattn/go-sqlite3 v1.14.22/go.mod h1:Uh1q+B4BYcTPb+yiD3kU8Ct7aC0hY9fxU
 github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
-github.com/resumeee-app/resumeee-core v0.0.0-20261115090108-cc25e871f448 h1:cpEYsb3YaAFrieBD79PpbVtLos+zdBz5z9jSeQuPY2E=
-github.com/resumeee-app/resumeee-core v0.0.0-20261115090108-cc25e871f448/go.mod h1:0IKQXgzjvUHcQ6Pti0VmRa6Ee0bzZnmIPELUs8NzSUw=
+github.com/resumeee-app/resumeee-core v0.0.0-20261115220151-9453215a9d6c h1:NSr7stg82+JGQ4SuY/eWfWZZrcd54SOowLTkwg45NVU=
+github.com/resumeee-app/resumeee-core v0.0.0-20261115220151-9453215a9d6c/go.mod h1:0IKQXgzjvUHcQ6Pti0VmRa6Ee0bzZnmIPELUs8NzSUw=
 golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.31.0 h1:ioabZlmFYtWhL+TRYpcnNlLwhyxaM9kWTDEmfnprqik=
 golang.org/x/sys v0.31.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=

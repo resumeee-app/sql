@@ -1,87 +1,69 @@
-// Package sql provides multi-database relational persistence implementations for Resumeee stores,
-// schema migrations, connection pooling, and baseline seed utilities.
+// Package sql implements a relational persistence backend for resumeee-core/store
+// backed by GORM across SQLite, PostgreSQL, and MySQL.
 //
-// Implemented store interfaces include:
-//   - core.ProfileStore: Main profiles, snapshots, career graph replacement, and revision increments
-//   - core.CareerStore: Skills, work experiences, projects, education, certifications, and facts
-//   - core.BranchStore: Targeted resume branches and immutable version snapshots
-//   - core.TemplateStore: Built-in ATS and custom resume rendering templates
-//   - core.PresetStore: Built-in and user-defined tailoring presets
-//   - core.PDFJobStore: Asynchronous PDF resume parsing job status tracking
-//   - core.QuotaStore: Multi-tenant token and request rate limit accounting
-//   - core.UserStore: Tenant identity and role management
+// This package provides durable CRUD persistence, atomic transaction boundaries
+// (including SQLite BEGIN IMMEDIATE write serialization and SQL SERIALIZABLE
+// retry handling), schema migration, connection pooling, DSN redaction, and
+// idempotent baseline store bootstrapping. All domain logic lives in resumeee-core.
 package sql
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/resumeee-app/resumeee-core"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-
-	"github.com/resumeee-app/resumeee-core"
 )
 
-// New initializes a GORM SQLite database connection using the pure-Go SQLite driver,
-// enables WAL mode, turns on foreign keys, and executes automatic schema migrations.
+// New opens an auto-migrated SQLite *gorm.DB for the given DSN with dialect tuning applied.
 func New(dsn string) (*gorm.DB, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, errors.New("sql: dsn cannot be empty")
+	}
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
-		Logger:      logger.Default.LogMode(logger.Silent),
-		PrepareStmt: true,
+		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database at %s: %w", dsn, err)
+		return nil, fmt.Errorf("sql: open sqlite: %w", err)
 	}
-
-	if err := RegisterNormalizationCallbacks(db); err != nil {
-		return nil, fmt.Errorf("failed to register normalization callbacks: %w", err)
+	if err := ConfigureDialect(db, DriverSQLite, dsn); err != nil {
+		return nil, err
 	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve generic sql.DB: %w", err)
+	if sqlDB, dbErr := db.DB(); dbErr == nil && sqlDB != nil {
+		ConfigureConnectionPool(sqlDB, DriverSQLite, dsn, poolConfig(DefaultConfig()))
 	}
-
-	// For in-memory databases with shared cache, pool connections appropriately
-	if strings.Contains(dsn, ":memory:") || strings.Contains(dsn, "mode=memory") {
-		sqlDB.SetMaxOpenConns(1)
-	} else {
-		sqlDB.SetMaxOpenConns(25)
-		sqlDB.SetMaxIdleConns(5)
-		sqlDB.SetConnMaxLifetime(1 * time.Hour)
-		sqlDB.SetConnMaxIdleTime(15 * time.Minute)
+	if err := AutoMigrate(db); err != nil {
+		return nil, err
 	}
-
-	// Enforce SQLite pragmas
-	if err := db.Exec("PRAGMA foreign_keys = ON;").Error; err != nil {
-		return nil, fmt.Errorf("failed to enable foreign keys pragma: %w", err)
-	}
-	if err := db.Exec("PRAGMA busy_timeout = 5000;").Error; err != nil {
-		return nil, fmt.Errorf("failed to set busy_timeout pragma: %w", err)
-	}
-	// WAL mode only applies to file-backed databases
-	if !strings.Contains(dsn, ":memory:") {
-		if err := db.Exec("PRAGMA journal_mode = WAL;").Error; err != nil {
-			return nil, fmt.Errorf("failed to enable WAL journal mode: %w", err)
-		}
-	}
-
-	if err := AutoMigrate(context.Background(), db); err != nil {
-		return nil, fmt.Errorf("failed to auto-migrate schema: %w", err)
-	}
-
 	return db, nil
 }
 
-// AutoMigrate migrates all entity tables and join tables defined by relational persistence models.
-func AutoMigrate(ctx context.Context, db *gorm.DB) error {
-	if err := db.WithContext(ctx).AutoMigrate(
+// poolConfig extracts ConnectionPoolConfig settings from cfg.
+func poolConfig(cfg Config) ConnectionPoolConfig {
+	return ConnectionPoolConfig{
+		MaxOpenConns:    cfg.MaxOpenConns,
+		MaxIdleConns:    cfg.MaxIdleConns,
+		ConnMaxLifetime: cfg.ConnMaxLifetime,
+		ConnMaxIdleTime: cfg.ConnMaxIdleTime,
+	}
+}
+
+// AutoMigrate reconciles relational tables, unique constraints, and secondary/partial indexes.
+func AutoMigrate(db *gorm.DB) error {
+	if db == nil {
+		return errors.New("sql: db cannot be nil")
+	}
+	models := []any{
+		&userRecord{},
+		&presetRecord{},
+		&templateSetRecord{},
+		&tenantQuotaRecord{},
+		&llmUsageRecord{},
 		&profileRecord{},
 		&skillRecord{},
 		&workExperienceRecord{},
@@ -89,102 +71,150 @@ func AutoMigrate(ctx context.Context, db *gorm.DB) error {
 		&educationRecord{},
 		&certificationRecord{},
 		&factRecord{},
-		&presetRecord{},
-		&templateSetRecord{},
 		&branchRecord{},
 		&branchVersionRecord{},
-		&pdfParseJobRecord{},
-		&userRecord{},
-		&tenantQuotaRecord{},
-		&llmUsageRecord{},
-	); err != nil {
-		return err
+		&jobRecord{},
 	}
+	if err := db.AutoMigrate(models...); err != nil {
+		return fmt.Errorf("sql: auto-migrate schema: %w", err)
+	}
+	return ensureIndexes(db)
+}
 
-	// Ensure secondary indexes on join tables for reverse lookups by skill_id
-	indexes := []string{
-		"CREATE INDEX IF NOT EXISTS idx_experience_skills_skill_id ON experience_skills (skill_id);",
-		"CREATE INDEX IF NOT EXISTS idx_project_skills_skill_id ON project_skills (skill_id);",
-		"CREATE INDEX IF NOT EXISTS idx_fact_skills_skill_id ON fact_skills (skill_id);",
-		"CREATE INDEX IF NOT EXISTS idx_skills_global ON skills (is_global);",
-		"CREATE INDEX IF NOT EXISTS idx_resume_versions_user_id ON resume_versions (user_id);",
-		"CREATE INDEX IF NOT EXISTS idx_skills_slug ON skills (slug);",
+// ensureIndexes creates secondary join-table and active-job indexes not covered by struct tags.
+func ensureIndexes(db *gorm.DB) error {
+	joinIndexes := []struct {
+		name   string
+		table  string
+		column string
+	}{
+		{name: "idx_experience_skills_skill_id", table: "experience_skills", column: "skill_id"},
+		{name: "idx_project_skills_skill_id", table: "project_skills", column: "skill_id"},
+		{name: "idx_fact_skills_skill_id", table: "fact_skills", column: "skill_id"},
 	}
-	for _, idx := range indexes {
-		if err := db.WithContext(ctx).Exec(idx).Error; err != nil {
-			return fmt.Errorf("creating join table index: %w", err)
+	for _, idx := range joinIndexes {
+		if err := createIndex(db, idx.name, idx.table, idx.column, ""); err != nil {
+			return err
 		}
 	}
 
+	if db.Dialector != nil && db.Name() == string(DriverMySQL) {
+		return createIndex(db, "idx_jobs_active", "jobs", "status, next_retry_at, created_at", "")
+	}
+	return createIndex(
+		db,
+		"idx_jobs_active",
+		"jobs",
+		"status, next_retry_at, created_at",
+		"status IN ('pending', 'processing')",
+	)
+}
+
+// createIndex idempotently creates an index using dialect-appropriate DDL.
+func createIndex(db *gorm.DB, name, table, columns, whereClause string) error {
+	if db.Dialector != nil && db.Name() == string(DriverMySQL) {
+		var count int64
+		if err := db.Raw(
+			"SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?",
+			table, name,
+		).Scan(&count).Error; err != nil {
+			return fmt.Errorf("sql: check index %s on %s: %w", name, table, err)
+		}
+		if count > 0 {
+			return nil
+		}
+		stmt := fmt.Sprintf("CREATE INDEX %s ON %s (%s)", name, table, columns)
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("sql: create index %s: %w", name, err)
+		}
+		return nil
+	}
+
+	stmt := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", name, table, columns)
+	if whereClause != "" {
+		stmt += " WHERE " + whereClause
+	}
+	if err := db.Exec(stmt).Error; err != nil {
+		return fmt.Errorf("sql: create index %s: %w", name, err)
+	}
 	return nil
 }
 
-// mapError converts GORM errors into canonical domain errors.
+// mapError translates GORM and SQL driver errors into canonical core domain sentinels.
 func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("%w: %v", core.ErrNotFound, err)
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, core.ErrNotFound) ||
+		errors.Is(err, core.ErrConflict) ||
+		errors.Is(err, core.ErrValidation) ||
+		errors.Is(err, core.ErrForbidden) {
+		return err
 	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return core.ErrNotFound
+	}
+	if isDuplicateKeyError(err) {
 		return fmt.Errorf("%w: %v", core.ErrConflict, err)
 	}
 	return err
 }
 
-// OpenStore initializes a SQLite database connection at dbPath, ensures parent directories exist,
-// seeds default data idempotently, and bundles all SQLite repository implementations into a repository.Store.
-//
-// Parameters:
-//   - ctx: Context controlling cancellation during startup and seeding.
-//   - dbPath: Filesystem path to SQLite database or memory URI (":memory:").
-//   - defaultUserID: Optional target user identifier for initial seed records (defaults to "default").
-//
-// Returns:
-//   - repository.Store: Initialized SQLite store bundle.
-//   - error: Non-nil if directory creation, database initialization, or seeding fails.
-func OpenStore(ctx context.Context, dbPath string, defaultUserID ...string) (core.Store, error) {
-	if dbPath != ":memory:" && !strings.Contains(dbPath, "mode=memory") {
-		dir := filepath.Dir(dbPath)
-		if dir != "." && dir != "" {
-			if err := os.MkdirAll(dir, 0750); err != nil {
-				return nil, fmt.Errorf("creating db directory: %w", err)
-			}
-		}
+// isDuplicateKeyError reports whether err represents a primary key or unique index constraint failure.
+func isDuplicateKeyError(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
 	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry") ||
+		strings.Contains(msg, "sqlite_constraint_unique") ||
+		strings.Contains(msg, "sqlite_constraint_primarykey") ||
+		strings.Contains(msg, "sqlstate 23505")
+}
 
-	db, err := New(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("initializing database: %w", err)
+// isSQLiteLockError reports whether err is a transient SQLite lock or busy contention failure.
+func isSQLiteLockError(err error) bool {
+	if err == nil {
+		return false
 	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "sqlite_locked")
+}
 
-	targetUserID := "default"
-	if len(defaultUserID) > 0 && defaultUserID[0] != "" {
-		targetUserID = defaultUserID[0]
+// isSerializationError reports whether err represents a transient SQL serialization or deadlock abort.
+func isSerializationError(err error) bool {
+	if err == nil {
+		return false
 	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "40001") ||
+		strings.Contains(msg, "40p01") ||
+		strings.Contains(msg, "could not serialize access") ||
+		strings.Contains(msg, "deadlock detected") ||
+		strings.Contains(msg, "deadlock found") ||
+		strings.Contains(msg, "error 1213")
+}
 
-	if err := SeedDefaultDataDB(ctx, db, targetUserID); err != nil {
-		return nil, fmt.Errorf("seeding default data: %w", err)
+// normalizeUTCTime converts non-zero timestamps to UTC while preserving zero time.Time values.
+func normalizeUTCTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Time{}
 	}
+	return t.UTC()
+}
 
-	sqlDB, err := db.DB()
-	closer := func() error {
-		if err == nil && sqlDB != nil {
-			return sqlDB.Close()
-		}
+// normalizeUTCTimePtr returns a UTC copy of non-nil time pointers.
+func normalizeUTCTimePtr(t *time.Time) *time.Time {
+	if t == nil {
 		return nil
 	}
-
-	return &core.StoreBundle{
-		ProfileStore:  NewProfileStore(db),
-		CareerStore:   NewCareerStore(db),
-		PresetStore:   NewPresetStore(db),
-		TemplateStore: NewTemplateStore(db),
-		BranchStore:   NewBranchStore(db),
-		PDFJobStore:   NewPDFJobStore(db),
-		QuotaStore:    NewQuotaStore(db),
-		UserStore:     NewUserStore(db),
-		Closer:        closer,
-	}, nil
+	u := t.UTC()
+	return &u
 }

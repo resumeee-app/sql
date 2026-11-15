@@ -6,12 +6,17 @@ import (
 	"strings"
 )
 
+// Credential detection patterns for supported DSN formats.
 var (
-	kvPasswordRegex  = regexp.MustCompile(`(?i)(password|pass|secret|token|api_key|apikey)\s*=\s*['"]?([^'"\s&]+)['"]?`)
+	// kvPasswordRegex matches key-value credential pairs in DSN strings.
+	kvPasswordRegex = regexp.MustCompile(`(?i)(password|pass|secret|token|api_key|apikey)\s*=\s*['"]?([^'"\s&]+)['"]?`)
+	// uriPasswordRegex matches userinfo passwords in URI connection strings.
 	uriPasswordRegex = regexp.MustCompile(`://([^:]+):([^@]+)@`)
-	mysqlDSNRegex    = regexp.MustCompile(`(?i)(^|[\s"'])([^:@\s"']+):([^@\s"']+)@((?:tcp|unix)\([^)]*\)|/)`)
+	// mysqlDSNRegex matches credentials in Go MySQL driver DSN strings.
+	mysqlDSNRegex = regexp.MustCompile(`(?i)(^|[\s"'])([^:@\s"']+):([^@\s"']+)@((?:tcp|unix)\([^)]*\)|/)`)
 )
 
+// sensitiveQueryParams lists URI query parameter keys whose values must be redacted.
 var sensitiveQueryParams = map[string]bool{
 	"password":   true,
 	"pass":       true,
