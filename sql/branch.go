@@ -268,8 +268,8 @@ func (r *readTx) ListBranches(ctx context.Context, userID string) ([]core.Branch
 	return out, nil
 }
 
-// GetBranch loads a branch record by ID.
-func (r *readTx) GetBranch(ctx context.Context, id string) (*core.Branch, error) {
+// Branch loads a branch record by ID.
+func (r *readTx) Branch(ctx context.Context, id string) (*core.Branch, error) {
 	var rec branchRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)
@@ -319,8 +319,8 @@ func (r *readTx) ListVersionsByIDs(ctx context.Context, ids []string) ([]core.Br
 	return out, nil
 }
 
-// GetVersion loads a branch version record by ID.
-func (r *readTx) GetVersion(ctx context.Context, id string) (*core.BranchVersion, error) {
+// Version loads a branch version record by ID.
+func (r *readTx) Version(ctx context.Context, id string) (*core.BranchVersion, error) {
 	var rec branchVersionRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)
@@ -328,8 +328,8 @@ func (r *readTx) GetVersion(ctx context.Context, id string) (*core.BranchVersion
 	return toCoreBranchVersion(&rec), nil
 }
 
-// GetVersionByNumber loads a branch version record by branchID and versionNumber.
-func (r *readTx) GetVersionByNumber(ctx context.Context, branchID string, versionNumber int) (*core.BranchVersion, error) {
+// VersionByNumber loads a branch version record by branchID and versionNumber.
+func (r *readTx) VersionByNumber(ctx context.Context, branchID string, versionNumber int) (*core.BranchVersion, error) {
 	var rec branchVersionRecord
 	if err := r.session().Where("branch_id = ? AND version_number = ?", branchID, versionNumber).First(&rec).Error; err != nil {
 		return nil, mapError(err)

@@ -21,6 +21,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/resumeee-app/resumeee-core v0.0.0-20261115220151-9453215a9d6c h1:NSr7stg82+JGQ4SuY/eWfWZZrcd54SOowLTkwg45NVU=
 github.com/resumeee-app/resumeee-core v0.0.0-20261115220151-9453215a9d6c/go.mod h1:0IKQXgzjvUHcQ6Pti0VmRa6Ee0bzZnmIPELUs8NzSUw=
+github.com/resumeee-app/resumeee-core v0.0.0-20261115233516-a33742e83521 h1:dJh5rmT8Cj57wlWfHeXHjkrqhvPpsyOpJxrjNfRzjA0=
+github.com/resumeee-app/resumeee-core v0.0.0-20261115233516-a33742e83521/go.mod h1:0IKQXgzjvUHcQ6Pti0VmRa6Ee0bzZnmIPELUs8NzSUw=
 golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
 golang.org/x/sys v0.31.0 h1:ioabZlmFYtWhL+TRYpcnNlLwhyxaM9kWTDEmfnprqik=
 golang.org/x/sys v0.31.0/go.mod h1:BJP2sWEmIv4KK5OTEluFJCKSidICx8ciO85XgH3Ak8k=

@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/resumeee-app/resumeee-core"
@@ -65,11 +66,34 @@ func toCoreTemplateSet(r *templateSetRecord) *core.TemplateSet {
 	}
 }
 
-// ListTemplates returns template sets belonging to userID or shared system/built-in templates.
-func (r *readTx) ListTemplates(ctx context.Context, userID string) ([]core.TemplateSet, error) {
+// ListTemplates returns templates whose UserID matches userIDs, whose ID starts with any prefix in idPrefixes, or whose IsBuiltIn flag is true when includeBuiltIn is true, deduplicated.
+func (r *readTx) ListTemplates(ctx context.Context, userIDs []string, idPrefixes []string, includeBuiltIn bool) ([]core.TemplateSet, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if len(userIDs) > 0 {
+		clauses = append(clauses, "user_id IN ?")
+		args = append(args, userIDs)
+	}
+	if includeBuiltIn {
+		clauses = append(clauses, "is_built_in = ?")
+		args = append(args, true)
+	}
+	for _, prefix := range idPrefixes {
+		if prefix == "" {
+			continue
+		}
+		clauses = append(clauses, "id LIKE ? ESCAPE '!'")
+		args = append(args, escapeLikePrefix(prefix))
+	}
+	if len(clauses) == 0 {
+		return []core.TemplateSet{}, nil
+	}
+
 	var recs []templateSetRecord
 	if err := r.session().
-		Where("user_id = ? OR user_id = ? OR is_built_in = ? OR id LIKE 'builtin-%'", userID, core.SystemUserID, true).
+		Where("("+strings.Join(clauses, " OR ")+")", args...).
 		Find(&recs).Error; err != nil {
 		return nil, mapError(err)
 	}
@@ -80,8 +104,8 @@ func (r *readTx) ListTemplates(ctx context.Context, userID string) ([]core.Templ
 	return out, nil
 }
 
-// GetTemplate loads a template set record by ID.
-func (r *readTx) GetTemplate(ctx context.Context, id string) (*core.TemplateSet, error) {
+// Template loads a template set record by ID.
+func (r *readTx) Template(ctx context.Context, id string) (*core.TemplateSet, error) {
 	var rec templateSetRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)

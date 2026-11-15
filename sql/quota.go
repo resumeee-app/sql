@@ -131,8 +131,8 @@ func toCoreLLMUsageRecord(r *llmUsageRecord) *core.LLMUsageRecord {
 	}
 }
 
-// GetQuota loads quota state for userID.
-func (r *readTx) GetQuota(ctx context.Context, userID string) (*core.TenantQuota, error) {
+// Quota loads quota state for userID.
+func (r *readTx) Quota(ctx context.Context, userID string) (*core.TenantQuota, error) {
 	var rec tenantQuotaRecord
 	if err := r.session().Where("user_id = ?", userID).First(&rec).Error; err != nil {
 		return nil, mapError(err)
@@ -140,8 +140,8 @@ func (r *readTx) GetQuota(ctx context.Context, userID string) (*core.TenantQuota
 	return toCoreTenantQuota(&rec), nil
 }
 
-// GetUsageRecord loads an LLM usage record by ID.
-func (r *readTx) GetUsageRecord(ctx context.Context, id string) (*core.LLMUsageRecord, error) {
+// UsageRecord loads an LLM usage record by ID.
+func (r *readTx) UsageRecord(ctx context.Context, id string) (*core.LLMUsageRecord, error) {
 	var rec llmUsageRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)

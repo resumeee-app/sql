@@ -84,8 +84,8 @@ func toCoreProfile(r *profileRecord) *core.Profile {
 	}
 }
 
-// GetProfile loads a candidate profile root by userID.
-func (r *readTx) GetProfile(ctx context.Context, userID string) (*core.Profile, error) {
+// Profile loads a candidate profile root by userID.
+func (r *readTx) Profile(ctx context.Context, userID string) (*core.Profile, error) {
 	var rec profileRecord
 	if err := r.session().Where("user_id = ?", userID).First(&rec).Error; err != nil {
 		return nil, mapError(err)

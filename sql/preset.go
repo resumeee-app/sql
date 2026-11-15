@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/resumeee-app/resumeee-core"
@@ -69,11 +70,30 @@ func toCorePreset(r *presetRecord) *core.Preset {
 	}
 }
 
-// ListPresets returns presets belonging to userID or shared system/built-in presets.
-func (r *readTx) ListPresets(ctx context.Context, userID string) ([]core.Preset, error) {
+// ListPresets returns presets whose UserID matches userIDs or whose ID starts with any prefix in idPrefixes, deduplicated.
+func (r *readTx) ListPresets(ctx context.Context, userIDs []string, idPrefixes []string) ([]core.Preset, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if len(userIDs) > 0 {
+		clauses = append(clauses, "user_id IN ?")
+		args = append(args, userIDs)
+	}
+	for _, prefix := range idPrefixes {
+		if prefix == "" {
+			continue
+		}
+		clauses = append(clauses, "id LIKE ? ESCAPE '!'")
+		args = append(args, escapeLikePrefix(prefix))
+	}
+	if len(clauses) == 0 {
+		return []core.Preset{}, nil
+	}
+
 	var recs []presetRecord
 	if err := r.session().
-		Where("user_id = ? OR user_id = ? OR user_id = '' OR id LIKE 'builtin-%'", userID, core.SystemUserID).
+		Where("("+strings.Join(clauses, " OR ")+")", args...).
 		Find(&recs).Error; err != nil {
 		return nil, mapError(err)
 	}
@@ -84,8 +104,8 @@ func (r *readTx) ListPresets(ctx context.Context, userID string) ([]core.Preset,
 	return out, nil
 }
 
-// GetPreset loads a preset record by ID.
-func (r *readTx) GetPreset(ctx context.Context, id string) (*core.Preset, error) {
+// Preset loads a preset record by ID.
+func (r *readTx) Preset(ctx context.Context, id string) (*core.Preset, error) {
 	var rec presetRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)

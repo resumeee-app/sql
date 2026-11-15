@@ -56,8 +56,8 @@ func toCoreUser(r *userRecord) *core.User {
 	}
 }
 
-// GetUser loads a user record by ID.
-func (r *readTx) GetUser(ctx context.Context, id string) (*core.User, error) {
+// User loads a user record by ID.
+func (r *readTx) User(ctx context.Context, id string) (*core.User, error) {
 	var rec userRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)

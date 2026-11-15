@@ -107,8 +107,8 @@ func toCoreJob(r *jobRecord) *core.Job {
 	}
 }
 
-// GetJob loads a queued background job by ID.
-func (r *readTx) GetJob(ctx context.Context, id string) (*core.Job, error) {
+// Job loads a queued background job by ID.
+func (r *readTx) Job(ctx context.Context, id string) (*core.Job, error) {
 	var rec jobRecord
 	if err := r.session().Where("id = ?", id).First(&rec).Error; err != nil {
 		return nil, mapError(err)
@@ -146,22 +146,14 @@ func (r *readTx) ListJobsByBranch(ctx context.Context, branchID string) ([]core.
 	return out, nil
 }
 
-// ListTerminalJobsBefore returns terminal jobs owned by userID whose completion or last update
-// timestamp falls strictly before cutoff.
-func (r *readTx) ListTerminalJobsBefore(ctx context.Context, userID string, cutoff time.Time) ([]core.Job, error) {
-	c := cutoff.UTC()
-	terminal := []core.JobStatus{
-		core.JobStatusCompleted,
-		core.JobStatusFailed,
-		core.JobStatusCancelled,
+// ListJobsByUser returns jobs owned by userID matching any status in statuses, or all jobs owned by userID when statuses is empty.
+func (r *readTx) ListJobsByUser(ctx context.Context, userID string, statuses []core.JobStatus) ([]core.Job, error) {
+	q := r.session().Where("user_id = ?", userID)
+	if len(statuses) > 0 {
+		q = q.Where("status IN ?", statuses)
 	}
 	var recs []jobRecord
-	if err := r.session().
-		Where(
-			"user_id = ? AND status IN ? AND ((completed_at IS NOT NULL AND completed_at < ?) OR (completed_at IS NULL AND updated_at < ?))",
-			userID, terminal, c, c,
-		).
-		Find(&recs).Error; err != nil {
+	if err := q.Find(&recs).Error; err != nil {
 		return nil, mapError(err)
 	}
 	out := make([]core.Job, len(recs))
