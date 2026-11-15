@@ -18,28 +18,20 @@ func (s *PDFJobStore) SubmitPendingJob(ctx context.Context, job *core.PDFParseJo
 	}
 
 	now := resolveNowTime(opts.Now)
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var count int64
-		if err := tx.Model(&pdfParseJobRecord{}).Where("id = ?", job.ID).Count(&count).Error; err != nil {
-			return mapError(err)
-		}
-		if count > 0 {
-			return core.ErrConflict
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
+		if err := ensureRecordIDAvailableTx[pdfParseJobRecord](tx, job.ID); err != nil {
+			return err
 		}
 		if err := checkPendingAdmissionTx(tx, job.UserID, "", opts, now); err != nil {
 			return err
 		}
 
-		_, _, ttl := resolvePendingLimits(opts)
+		dates := resolvePendingDates(job.CreatedAt, job.ExpiresAt, job.NextRetryAt, opts, now)
 		job.Status = core.PDFParseJobStatusPending
-		if job.CreatedAt.IsZero() {
-			job.CreatedAt = now
-		}
-		job.UpdatedAt = now
-		if job.ExpiresAt == nil {
-			exp := now.Add(ttl)
-			job.ExpiresAt = &exp
-		}
+		job.CreatedAt = dates.createdAt
+		job.UpdatedAt = dates.updatedAt
+		job.ExpiresAt = dates.expiresAt
+		job.NextRetryAt = dates.nextRetryAt
 		job.ClaimedBy = ""
 		job.ClaimedAt = nil
 		job.LeaseExpiresAt = nil
@@ -80,9 +72,9 @@ func (s *PDFJobStore) CancelJob(ctx context.Context, userID, jobID, reason strin
 	}
 
 	var out *core.PDFParseJob
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var rec pdfParseJobRecord
-		if err := tx.Where("id = ?", jobID).First(&rec).Error; err != nil {
+		if err := withQueueLock(tx).Where("id = ?", jobID).First(&rec).Error; err != nil {
 			return mapError(err)
 		}
 		if rec.UserID != userID {
@@ -114,17 +106,23 @@ func (s *PDFJobStore) ClaimNextJob(ctx context.Context, req core.ClaimJobRequest
 	leaseDur := resolveLeaseDuration(req.LeaseDuration)
 
 	var out *core.PDFParseJob
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		candidates, err := findEligiblePDFCandidatesTx(tx, req, now)
-		if err != nil {
-			return err
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
+		skipped := make(map[string]bool)
+		for {
+			candidates, err := findEligiblePDFCandidatesTx(tx, req, now, skipped)
+			if err != nil {
+				return err
+			}
+			winnerID, ok := selectFairestCandidate(candidates, req.LastServedSeq)
+			if !ok {
+				return nil
+			}
+			out, err = acquirePDFJobLeaseTx(tx, winnerID, req.WorkerID, now, leaseDur)
+			if err != nil || out != nil {
+				return err
+			}
+			skipped[winnerID] = true
 		}
-		winnerID, ok := selectFairestCandidate(candidates, req.LastServedSeq)
-		if !ok {
-			return nil
-		}
-		out, err = acquirePDFJobLeaseTx(tx, winnerID, req.WorkerID, now, leaseDur)
-		return err
 	})
 	if err != nil {
 		return nil, err
@@ -133,7 +131,7 @@ func (s *PDFJobStore) ClaimNextJob(ctx context.Context, req core.ClaimJobRequest
 }
 
 // findEligiblePDFCandidatesTx gathers claimable pending PDF jobs enforcing expiry, retry readiness, and cross-queue concurrency.
-func findEligiblePDFCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time) ([]claimCandidate, error) {
+func findEligiblePDFCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time, skipped map[string]bool) ([]claimCandidate, error) {
 	otherVersionByTenant, _, activeByTenant, err := activeProcessingByTenantTx(tx, now)
 	if err != nil {
 		return nil, err
@@ -145,7 +143,7 @@ func findEligiblePDFCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time
 	}
 
 	var pending []pdfParseJobRecord
-	if err := tx.Select("id, user_id, created_at, expires_at, next_retry_at").
+	if err := withQueueLock(tx).Select("id, user_id, created_at, expires_at, next_retry_at").
 		Where("status = ?", core.PDFParseJobStatusPending).
 		Find(&pending).Error; err != nil {
 		return nil, mapError(err)
@@ -154,7 +152,7 @@ func findEligiblePDFCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time
 	var candidates []claimCandidate
 	for i := range pending {
 		job := &pending[i]
-		if !isPendingUnexpired(job.ExpiresAt, now) || !isRetryReady(job.NextRetryAt, now) {
+		if skipped[job.ID] || !isPendingUnexpired(job.ExpiresAt, now) || !isRetryReady(job.NextRetryAt, now) {
 			continue
 		}
 		if req.MaxConcurrentPerTenant > 0 && activeByTenant[job.UserID]+otherByTenant[job.UserID] >= req.MaxConcurrentPerTenant {
@@ -195,7 +193,7 @@ func (s *PDFJobStore) RenewJobLease(ctx context.Context, jobID, claimedBy string
 		return fmt.Errorf("%w: job id, claimed_by, and lease_expires_at are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		if _, err := claimedPDFJobTx(tx, jobID, claimedBy); err != nil {
 			return err
 		}
@@ -211,7 +209,7 @@ func (s *PDFJobStore) RequeueJobForRetry(ctx context.Context, jobID, claimedBy s
 		return fmt.Errorf("%w: job id, claimed_by, and next_retry_at are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		job, err := claimedPDFJobTx(tx, jobID, claimedBy)
 		if err != nil {
 			return err
@@ -233,7 +231,7 @@ func (s *PDFJobStore) CompleteClaimedJob(ctx context.Context, jobID, claimedBy s
 		return fmt.Errorf("%w: job id and claimed_by are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		job, err := claimedPDFJobTx(tx, jobID, claimedBy)
 		if err != nil {
 			return err
@@ -260,7 +258,7 @@ func (s *PDFJobStore) FailClaimedJob(ctx context.Context, jobID, claimedBy, errM
 		return fmt.Errorf("%w: job id and claimed_by are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		job, err := claimedPDFJobTx(tx, jobID, claimedBy)
 		if err != nil {
 			return err
@@ -275,9 +273,9 @@ func (s *PDFJobStore) ExpirePendingJobs(ctx context.Context, now time.Time, reas
 	ts := resolveNowTime(now)
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var pending []pdfParseJobRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? AND expires_at IS NOT NULL AND expires_at <= ?", core.PDFParseJobStatusPending, ts).
 			Find(&pending).Error; err != nil {
 			return mapError(err)
@@ -299,9 +297,9 @@ func (s *PDFJobStore) FailExpiredJobLeases(ctx context.Context, now time.Time, r
 	ts := resolveNowTime(now)
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var processing []pdfParseJobRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", core.PDFParseJobStatusProcessing, ts).
 			Find(&processing).Error; err != nil {
 			return mapError(err)
@@ -323,9 +321,9 @@ func (s *PDFJobStore) RecoverInterruptedJobs(ctx context.Context, reason string)
 	ts := time.Now().UTC()
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var records []pdfParseJobRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? OR (status = ? AND expires_at IS NOT NULL AND expires_at <= ?)",
 				core.PDFParseJobStatusProcessing, core.PDFParseJobStatusPending, ts,
 			).Find(&records).Error; err != nil {
@@ -346,7 +344,7 @@ func (s *PDFJobStore) RecoverInterruptedJobs(ctx context.Context, reason string)
 // claimedPDFJobTx loads jobID inside tx and verifies active processing lease ownership by claimedBy.
 func claimedPDFJobTx(tx *gorm.DB, jobID, claimedBy string) (*pdfParseJobRecord, error) {
 	var job pdfParseJobRecord
-	if err := tx.Where("id = ?", jobID).First(&job).Error; err != nil {
+	if err := withQueueLock(tx).Where("id = ?", jobID).First(&job).Error; err != nil {
 		return nil, mapError(err)
 	}
 	if job.Status != core.PDFParseJobStatusProcessing || job.ClaimedBy != claimedBy {

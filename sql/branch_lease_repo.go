@@ -20,8 +20,11 @@ func (s *BranchStore) SubmitPendingVersion(ctx context.Context, version *core.Br
 	now := resolveNowTime(opts.Now)
 	var released []core.ReleasedReservation
 
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := ensureVersionIDAvailableTx(tx, version.ID); err != nil {
+	err = runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
+		if err := ensureRecordIDAvailableTx[branchVersionRecord](tx, version.ID); err != nil {
+			return err
+		}
+		if err := loadBranchForSubmissionTx(tx, branchID, version); err != nil {
 			return err
 		}
 		existing, err := loadActiveBranchVersionsTx(tx, branchID)
@@ -54,7 +57,7 @@ func (s *BranchStore) SubmitPendingVersion(ctx context.Context, version *core.Br
 	return released, nil
 }
 
-// validatePendingVersionInput normalizes version and verifies required submission fields.
+// validatePendingVersionInput normalizes version and verifies required submission fields prior to parent branch lookup.
 func validatePendingVersionInput(version *core.BranchVersion) (string, error) {
 	if version == nil {
 		return "", fmt.Errorf("%w: version cannot be nil", core.ErrValidation)
@@ -67,23 +70,25 @@ func validatePendingVersionInput(version *core.BranchVersion) (string, error) {
 	if branchID == "" {
 		return "", fmt.Errorf("%w: branch id is required", core.ErrValidation)
 	}
-	if version.UserID == "" {
-		return "", fmt.Errorf("%w: user id is required", core.ErrValidation)
-	}
 	if version.ID == "" {
 		version.ID = core.GenerateID("ver")
 	}
 	return branchID, nil
 }
 
-// ensureVersionIDAvailableTx returns ErrConflict if a version with id already exists.
-func ensureVersionIDAvailableTx(tx *gorm.DB, id string) error {
-	var count int64
-	if err := tx.Model(&branchVersionRecord{}).Where("id = ?", id).Count(&count).Error; err != nil {
+// loadBranchForSubmissionTx verifies parent branch existence and ownership, inheriting empty UserID from the branch.
+func loadBranchForSubmissionTx(tx *gorm.DB, branchID string, version *core.BranchVersion) error {
+	var br branchRecord
+	if err := withQueueLock(tx).Select("id, user_id").Where("id = ?", branchID).First(&br).Error; err != nil {
 		return mapError(err)
 	}
-	if count > 0 {
-		return core.ErrConflict
+	if version.UserID == "" {
+		version.UserID = br.UserID
+	} else if br.UserID != "" && br.UserID != version.UserID {
+		return core.ErrNotFound
+	}
+	if version.UserID == "" {
+		return fmt.Errorf("%w: user id is required", core.ErrValidation)
 	}
 	return nil
 }
@@ -91,7 +96,7 @@ func ensureVersionIDAvailableTx(tx *gorm.DB, id string) error {
 // loadActiveBranchVersionsTx fetches pending and processing versions belonging to branchID.
 func loadActiveBranchVersionsTx(tx *gorm.DB, branchID string) ([]branchVersionRecord, error) {
 	var existing []branchVersionRecord
-	err := tx.Where("(resume_id = ? OR branch_id = ?) AND status IN ?",
+	err := withQueueLock(tx).Where("(resume_id = ? OR branch_id = ?) AND status IN ?",
 		branchID, branchID, []core.VersionStatus{core.VersionStatusProcessing, core.VersionStatusPending},
 	).Find(&existing).Error
 	return existing, mapError(err)
@@ -131,17 +136,13 @@ func insertPendingVersionTx(tx *gorm.DB, version *core.BranchVersion, branchID s
 		return mapError(err)
 	}
 
-	_, _, ttl := resolvePendingLimits(opts)
+	dates := resolvePendingDates(version.CreatedAt, version.ExpiresAt, version.NextRetryAt, opts, now)
 	version.VersionNumber = maxVer + 1
 	version.Status = core.VersionStatusPending
-	if version.CreatedAt.IsZero() {
-		version.CreatedAt = now
-	}
-	version.UpdatedAt = now
-	if version.ExpiresAt == nil {
-		exp := now.Add(ttl)
-		version.ExpiresAt = &exp
-	}
+	version.CreatedAt = dates.createdAt
+	version.UpdatedAt = dates.updatedAt
+	version.ExpiresAt = dates.expiresAt
+	version.NextRetryAt = dates.nextRetryAt
 	version.ClaimedBy = ""
 	version.ClaimedAt = nil
 	version.LeaseExpiresAt = nil
@@ -156,7 +157,7 @@ func (s *BranchStore) SupersedePendingVersions(ctx context.Context, branchID, re
 		return nil, fmt.Errorf("%w: branch id cannot be empty", core.ErrValidation)
 	}
 	var released []core.ReleasedReservation
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var err error
 		released, err = supersedePendingVersionsTx(tx, branchID, reason, time.Now().UTC())
 		return err
@@ -175,9 +176,9 @@ func (s *BranchStore) AbortBranchVersions(ctx context.Context, branchID, reason 
 
 	now := time.Now().UTC()
 	var released []core.ReleasedReservation
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var records []branchVersionRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("(resume_id = ? OR branch_id = ?) AND status IN ?",
 				branchID, branchID, []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing},
 			).Find(&records).Error; err != nil {
@@ -203,9 +204,9 @@ func (s *BranchStore) CancelVersion(ctx context.Context, userID, branchID, versi
 	}
 
 	var out *core.BranchVersion
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var rec branchVersionRecord
-		if err := tx.Where("id = ?", versionID).First(&rec).Error; err != nil {
+		if err := withQueueLock(tx).Where("id = ?", versionID).First(&rec).Error; err != nil {
 			return mapError(err)
 		}
 		matchesBranch := branchID == "" || rec.ResumeID == branchID || rec.BranchID == branchID
@@ -238,17 +239,23 @@ func (s *BranchStore) ClaimNextVersion(ctx context.Context, req core.ClaimJobReq
 	leaseDur := resolveLeaseDuration(req.LeaseDuration)
 
 	var out *core.BranchVersion
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		candidates, err := findEligibleVersionCandidatesTx(tx, req, now)
-		if err != nil {
-			return err
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
+		skipped := make(map[string]bool)
+		for {
+			candidates, err := findEligibleVersionCandidatesTx(tx, req, now, skipped)
+			if err != nil {
+				return err
+			}
+			winnerID, ok := selectFairestCandidate(candidates, req.LastServedSeq)
+			if !ok {
+				return nil
+			}
+			out, err = acquireVersionLeaseTx(tx, winnerID, req.WorkerID, now, leaseDur)
+			if err != nil || out != nil {
+				return err
+			}
+			skipped[winnerID] = true
 		}
-		winnerID, ok := selectFairestCandidate(candidates, req.LastServedSeq)
-		if !ok {
-			return nil
-		}
-		out, err = acquireVersionLeaseTx(tx, winnerID, req.WorkerID, now, leaseDur)
-		return err
 	})
 	if err != nil {
 		return nil, err
@@ -257,7 +264,7 @@ func (s *BranchStore) ClaimNextVersion(ctx context.Context, req core.ClaimJobReq
 }
 
 // findEligibleVersionCandidatesTx gathers claimable pending versions enforcing expiry, backoff, per-branch exclusivity, and tenant concurrency.
-func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time) ([]claimCandidate, error) {
+func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now time.Time, skipped map[string]bool) ([]claimCandidate, error) {
 	byTenant, activeBranches, otherPDFByTenant, err := activeProcessingByTenantTx(tx, now)
 	if err != nil {
 		return nil, err
@@ -269,7 +276,7 @@ func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now 
 	}
 
 	var pending []branchVersionRecord
-	if err := tx.Select("id, user_id, resume_id, branch_id, created_at, expires_at, next_retry_at").
+	if err := withQueueLock(tx).Select("id, user_id, resume_id, branch_id, created_at, expires_at, next_retry_at").
 		Where("status = ?", core.VersionStatusPending).
 		Find(&pending).Error; err != nil {
 		return nil, mapError(err)
@@ -278,7 +285,7 @@ func findEligibleVersionCandidatesTx(tx *gorm.DB, req core.ClaimJobRequest, now 
 	var candidates []claimCandidate
 	for i := range pending {
 		v := &pending[i]
-		if !isPendingUnexpired(v.ExpiresAt, now) || !isRetryReady(v.NextRetryAt, now) {
+		if skipped[v.ID] || !isPendingUnexpired(v.ExpiresAt, now) || !isRetryReady(v.NextRetryAt, now) {
 			continue
 		}
 		if activeBranches[v.effectiveBranchID()] {
@@ -322,7 +329,7 @@ func (s *BranchStore) RenewVersionLease(ctx context.Context, versionID, claimedB
 		return fmt.Errorf("%w: version id, claimed_by, and lease_expires_at are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		if _, err := claimedVersionTx(tx, versionID, claimedBy); err != nil {
 			return err
 		}
@@ -338,7 +345,7 @@ func (s *BranchStore) RequeueVersionForRetry(ctx context.Context, versionID, cla
 		return fmt.Errorf("%w: version id, claimed_by, and next_retry_at are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		v, err := claimedVersionTx(tx, versionID, claimedBy)
 		if err != nil {
 			return err
@@ -360,7 +367,7 @@ func (s *BranchStore) FailClaimedVersion(ctx context.Context, versionID, claimed
 		return fmt.Errorf("%w: version id and claimed_by are required", core.ErrValidation)
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		v, err := claimedVersionTx(tx, versionID, claimedBy)
 		if err != nil {
 			return err
@@ -375,9 +382,9 @@ func (s *BranchStore) ExpirePendingVersions(ctx context.Context, now time.Time, 
 	ts := resolveNowTime(now)
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var pending []branchVersionRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? AND expires_at IS NOT NULL AND expires_at <= ?", core.VersionStatusPending, ts).
 			Find(&pending).Error; err != nil {
 			return mapError(err)
@@ -399,9 +406,9 @@ func (s *BranchStore) FailExpiredVersionLeases(ctx context.Context, now time.Tim
 	ts := resolveNowTime(now)
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var processing []branchVersionRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", core.VersionStatusProcessing, ts).
 			Find(&processing).Error; err != nil {
 			return mapError(err)
@@ -423,9 +430,9 @@ func (s *BranchStore) RecoverInterruptedVersions(ctx context.Context, reason str
 	ts := time.Now().UTC()
 	var released []core.ReleasedReservation
 
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		var records []branchVersionRecord
-		if err := tx.Select("id, user_id, reservation_id").
+		if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 			Where("status = ? OR (status = ? AND expires_at IS NOT NULL AND expires_at <= ?)",
 				core.VersionStatusProcessing, core.VersionStatusPending, ts,
 			).Find(&records).Error; err != nil {
@@ -446,7 +453,7 @@ func (s *BranchStore) RecoverInterruptedVersions(ctx context.Context, reason str
 // supersedePendingVersionsTx cancels all pending versions on branchID inside tx and returns any released reservations.
 func supersedePendingVersionsTx(tx *gorm.DB, branchID, reason string, now time.Time) ([]core.ReleasedReservation, error) {
 	var pending []branchVersionRecord
-	if err := tx.Select("id, user_id, reservation_id").
+	if err := withQueueLock(tx).Select("id, user_id, reservation_id").
 		Where("(resume_id = ? OR branch_id = ?) AND status = ?", branchID, branchID, core.VersionStatusPending).
 		Find(&pending).Error; err != nil {
 		return nil, mapError(err)
@@ -459,7 +466,7 @@ func supersedePendingVersionsTx(tx *gorm.DB, branchID, reason string, now time.T
 // claimedVersionTx loads versionID inside tx and verifies active processing lease ownership by claimedBy.
 func claimedVersionTx(tx *gorm.DB, versionID, claimedBy string) (*branchVersionRecord, error) {
 	var v branchVersionRecord
-	if err := tx.Where("id = ?", versionID).First(&v).Error; err != nil {
+	if err := withQueueLock(tx).Where("id = ?", versionID).First(&v).Error; err != nil {
 		return nil, mapError(err)
 	}
 	if v.Status != core.VersionStatusProcessing || v.ClaimedBy != claimedBy {

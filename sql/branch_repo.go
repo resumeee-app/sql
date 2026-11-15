@@ -210,13 +210,13 @@ func toBranchVersionRecord(v *core.BranchVersion) *branchVersionRecord {
 		PlainTextOutput:    v.PlainTextOutput,
 		AttemptCount:       v.AttemptCount,
 		ClaimedBy:          v.ClaimedBy,
-		ClaimedAt:          v.ClaimedAt,
-		LeaseExpiresAt:     v.LeaseExpiresAt,
-		NextRetryAt:        v.NextRetryAt,
-		ExpiresAt:          v.ExpiresAt,
-		CreatedAt:          v.CreatedAt,
-		UpdatedAt:          v.UpdatedAt,
-		CompletedAt:        v.CompletedAt,
+		ClaimedAt:          normalizeUTCTimePtr(v.ClaimedAt),
+		LeaseExpiresAt:     normalizeUTCTimePtr(v.LeaseExpiresAt),
+		NextRetryAt:        normalizeUTCTimePtr(v.NextRetryAt),
+		ExpiresAt:          normalizeUTCTimePtr(v.ExpiresAt),
+		CreatedAt:          v.CreatedAt.UTC(),
+		UpdatedAt:          v.UpdatedAt.UTC(),
+		CompletedAt:        normalizeUTCTimePtr(v.CompletedAt),
 	}
 }
 
@@ -499,12 +499,12 @@ func (s *BranchStore) CompleteVersion(ctx context.Context, version *core.BranchV
 	if version == nil {
 		return core.ErrValidation
 	}
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return runQueueTx(ctx, s.db, func(tx *gorm.DB) error {
 		_ = version.Normalize()
 		parentID := version.ResumeID
 
 		var br branchRecord
-		if err := tx.Where("id = ?", parentID).First(&br).Error; err != nil {
+		if err := withQueueLock(tx).Where("id = ?", parentID).First(&br).Error; err != nil {
 			return mapError(err)
 		}
 		existing, exists, err := validateVersionCompletionTx(tx, &br, version)
@@ -529,7 +529,7 @@ func (s *BranchStore) CompleteVersion(ctx context.Context, version *core.BranchV
 // validateVersionCompletionTx enforces non-resurrection, lease ownership, and monotonic active-version checks.
 func validateVersionCompletionTx(tx *gorm.DB, br *branchRecord, version *core.BranchVersion) (*branchVersionRecord, bool, error) {
 	var existing branchVersionRecord
-	err := tx.Where("id = ?", version.ID).First(&existing).Error
+	err := withQueueLock(tx).Where("id = ?", version.ID).First(&existing).Error
 	exists := err == nil
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, mapError(err)
@@ -552,7 +552,11 @@ func validateVersionCompletionTx(tx *gorm.DB, br *branchRecord, version *core.Br
 	}
 	if br.ActiveVersionID != nil && *br.ActiveVersionID != "" {
 		var activeVer branchVersionRecord
-		if err := tx.Where("id = ?", *br.ActiveVersionID).First(&activeVer).Error; err == nil && activeVer.VersionNumber > verNum {
+		err := withQueueLock(tx).Where("id = ?", *br.ActiveVersionID).First(&activeVer).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, mapError(err)
+		}
+		if err == nil && activeVer.VersionNumber > verNum {
 			return nil, false, fmt.Errorf("%w: stale version %d cannot overwrite active version %d", core.ErrConflict, verNum, activeVer.VersionNumber)
 		}
 	}
@@ -562,21 +566,15 @@ func validateVersionCompletionTx(tx *gorm.DB, br *branchRecord, version *core.Br
 // prepareCompletedVersion fills inherited metadata and clears transient lease fields prior to persistence.
 func prepareCompletedVersion(version *core.BranchVersion, br *branchRecord, existing *branchVersionRecord, exists bool, now time.Time) {
 	if exists {
-		if version.VersionNumber == 0 {
-			version.VersionNumber = existing.VersionNumber
-		}
-		if version.UserID == "" {
-			version.UserID = existing.UserID
-		}
-		if version.CreatedAt.IsZero() {
-			version.CreatedAt = existing.CreatedAt
-		}
+		preserveCompletedVersionMetadata(version, existing)
 	}
 	if version.UserID == "" {
 		version.UserID = br.UserID
 	}
 	if version.CreatedAt.IsZero() {
 		version.CreatedAt = now
+	} else {
+		version.CreatedAt = version.CreatedAt.UTC()
 	}
 	if !version.Status.IsCompleted() {
 		version.Status = core.VersionStatusCompleted
@@ -588,6 +586,52 @@ func prepareCompletedVersion(version *core.BranchVersion, br *branchRecord, exis
 	version.ClaimedBy = ""
 	version.LeaseExpiresAt = nil
 	version.NextRetryAt = nil
+}
+
+// preserveCompletedVersionMetadata retains persisted creation, lineage, and lease-attempt metadata when a partial completion input omits them.
+func preserveCompletedVersionMetadata(version *core.BranchVersion, existing *branchVersionRecord) {
+	if version.VersionNumber == 0 {
+		version.VersionNumber = existing.VersionNumber
+	}
+	if version.UserID == "" {
+		version.UserID = existing.UserID
+	}
+	if version.CreatedAt.IsZero() {
+		version.CreatedAt = existing.CreatedAt
+	}
+	if version.AttemptCount == 0 {
+		version.AttemptCount = existing.AttemptCount
+	}
+	if version.ClaimedAt == nil {
+		version.ClaimedAt = normalizeUTCTimePtr(existing.ClaimedAt)
+	}
+	if version.ExpiresAt == nil {
+		version.ExpiresAt = normalizeUTCTimePtr(existing.ExpiresAt)
+	}
+	if version.ReservationID == "" {
+		version.ReservationID = existing.ReservationID
+	}
+	if version.MainRevisionUsed == 0 {
+		version.MainRevisionUsed = existing.MainRevisionUsed
+	}
+	if version.TemplateSetIDUsed == "" {
+		version.TemplateSetIDUsed = existing.TemplateSetIDUsed
+	}
+	if version.StrategyIDUsed == nil {
+		version.StrategyIDUsed = existing.StrategyIDUsed
+	}
+	if version.ProviderUsed == "" {
+		version.ProviderUsed = existing.ProviderUsed
+	}
+	if version.ModelUsed == "" {
+		version.ModelUsed = existing.ModelUsed
+	}
+	if version.SourceType == "" {
+		version.SourceType = existing.SourceType
+	}
+	if version.ParentVersionID == nil {
+		version.ParentVersionID = existing.ParentVersionID
+	}
 }
 
 // buildBranchSyncUpdates constructs the parent branch column updates reflecting a completed version.
@@ -673,12 +717,5 @@ func (s *BranchStore) FailInterruptedVersions(ctx context.Context, reason string
 	return mapError(s.db.WithContext(ctx).
 		Model(&branchVersionRecord{}).
 		Where("status IN ?", []core.VersionStatus{core.VersionStatusPending, core.VersionStatusProcessing}).
-		Updates(map[string]any{
-			"status":           core.VersionStatusFailed,
-			"error_message":    reason,
-			"updated_at":       now,
-			"completed_at":     &now,
-			"lease_expires_at": nil,
-			"next_retry_at":    nil,
-		}).Error)
+		Updates(leaseTerminalUpdates(core.VersionStatusFailed, reason, now, false, nil)).Error)
 }

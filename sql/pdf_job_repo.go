@@ -56,13 +56,13 @@ func toPDFParseJobRecord(j *core.PDFParseJob) *pdfParseJobRecord {
 		ErrorMessage:   j.ErrorMessage,
 		AttemptCount:   j.AttemptCount,
 		ClaimedBy:      j.ClaimedBy,
-		ClaimedAt:      j.ClaimedAt,
-		LeaseExpiresAt: j.LeaseExpiresAt,
-		NextRetryAt:    j.NextRetryAt,
-		ExpiresAt:      j.ExpiresAt,
-		CreatedAt:      j.CreatedAt,
-		UpdatedAt:      j.UpdatedAt,
-		CompletedAt:    j.CompletedAt,
+		ClaimedAt:      normalizeUTCTimePtr(j.ClaimedAt),
+		LeaseExpiresAt: normalizeUTCTimePtr(j.LeaseExpiresAt),
+		NextRetryAt:    normalizeUTCTimePtr(j.NextRetryAt),
+		ExpiresAt:      normalizeUTCTimePtr(j.ExpiresAt),
+		CreatedAt:      j.CreatedAt.UTC(),
+		UpdatedAt:      j.UpdatedAt.UTC(),
+		CompletedAt:    normalizeUTCTimePtr(j.CompletedAt),
 	}
 }
 
@@ -159,7 +159,7 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 			return fmt.Errorf("%w: cannot transition terminal job %s from %s to %s", core.ErrConflict, jobID, rec.Status, status)
 		}
 
-		now := time.Now().UTC().UTC()
+		now := time.Now().UTC()
 		rec.Status = status
 		rec.UpdatedAt = now
 		if errMsg != "" {
@@ -184,16 +184,8 @@ func (s *PDFJobStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 
 // FailInterruptedJobs marks all pending and processing jobs as failed with the given reason upon server restart.
 func (s *PDFJobStore) FailInterruptedJobs(ctx context.Context, reason string) error {
-	now := time.Now().UTC().UTC()
-	updates := map[string]any{
-		"status":           core.PDFParseJobStatusFailed,
-		"error_message":    reason,
-		"raw_text":         "",
-		"updated_at":       now,
-		"completed_at":     &now,
-		"lease_expires_at": nil,
-		"next_retry_at":    nil,
-	}
+	now := time.Now().UTC()
+	updates := leaseTerminalUpdates(core.PDFParseJobStatusFailed, reason, now, false, map[string]any{"raw_text": ""})
 
 	err := s.db.WithContext(ctx).
 		Model(&pdfParseJobRecord{}).
