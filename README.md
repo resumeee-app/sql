@@ -14,7 +14,7 @@ github.com/resumeee-app/
 ├── sql                    # Pure SQL store.Backend adapter (GORM SQLite / Postgres / MySQL)
 ├── resumeee-auth-firebase # Token verifier adapter (Firebase RS256 JWKS)
 ├── server                 # Production REST & MCP server and asynchronous worker pipeline
-├── resumeee-web           # React 18 / Vite / TypeScript single-page application
+├── web                    # React 18 / Vite / TypeScript single-page application
 ├── resumeee-mcp           # Standalone Model Context Protocol (MCP) server
 └── resumeee               # Flagship umbrella distribution repository
 ```
