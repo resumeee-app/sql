@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Idiomatic Go standards for `resumeee-storage-sql`. Run `make verify` after every change.
+Idiomatic Go standards for `sql` (`github.com/resumeee-app/sql`). Run `make verify` after every change.
 
 ## Documentation
 
@@ -26,7 +26,7 @@ Idiomatic Go standards for `resumeee-storage-sql`. Run `make verify` after every
   - Omit `Get` on simple getters (`DB()` rather than `GetDB()`).
   - Name constructors `New` or `New<Type>`, and sentinel errors `Err<Name>`.
   - Use a consistent 1–2 letter receiver name derived from the type across all methods (never `this` or `self`).
-- **Dependency boundaries**: Encapsulate GORM models, callbacks, and SQLite/SQL dialect details inside `sql/`; map to/from `core` domain types at the repository boundary.
+- **Dependency boundaries**: Encapsulate GORM models, callbacks, and SQLite/SQL dialect details inside package `sql`; map to/from `core` domain types at the repository boundary.
 
 ## Verification
 

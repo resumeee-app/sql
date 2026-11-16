@@ -1,4 +1,4 @@
-module github.com/resumeee-app/resumeee-storage-sql
+module github.com/resumeee-app/sql
 
 go 1.27.2
 

@@ -1,4 +1,4 @@
-# resumeee-storage-sql
+# sql
 
 Multi-database persistence backend implementing [`core/store.Backend`](https://github.com/resumeee-app/core) via GORM across SQLite (embedded pure-Go), PostgreSQL, and MySQL with TLS enforcement and DSN credential sanitization.
 
@@ -11,7 +11,7 @@ This repository is part of the **Resumeee** multi-module suite:
 ```
 github.com/resumeee-app/
 ├── core                   # Pure domain entities, centralized store.Store engine, worker, storetest
-├── resumeee-storage-sql   # Pure SQL store.Backend adapter (GORM SQLite / Postgres / MySQL)
+├── sql                    # Pure SQL store.Backend adapter (GORM SQLite / Postgres / MySQL)
 ├── resumeee-auth-firebase # Token verifier adapter (Firebase RS256 JWKS)
 ├── server                 # Production REST & MCP server and asynchronous worker pipeline
 ├── resumeee-web           # React 18 / Vite / TypeScript single-page application
