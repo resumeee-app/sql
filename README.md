@@ -1,36 +1,26 @@
+<p align="center">
+  <img src="./.github/logo-192x192.png" alt="Resumeee" width="96" />
+</p>
+
 # sql
 
-Multi-database persistence backend implementing [`core/store.Backend`](https://github.com/resumeee-app/core) via GORM across SQLite (embedded pure-Go), PostgreSQL, and MySQL with TLS enforcement and DSN credential sanitization.
+SQL persistence backend for **Resumeee** (`github.com/resumeee-app/sql`), implementing the `core` storage interfaces.
 
-All domain rules, quota accounting, skill resolution, `MainRevision` bumping, `Branch.Epoch` fencing, and unified job queue scheduling live cleanly in `core/store`. This repository provides durable CRUD persistence, atomic transaction isolation (`BEGIN IMMEDIATE` for SQLite; `SERIALIZABLE` with retry for PostgreSQL/MySQL), schema migrations, and baseline bootstrapping returning `*store.Store`.
+## What It Contains
 
-## Architecture
+- **Database Drivers** — Pure-Go SQLite (embedded default), PostgreSQL, and MySQL support.
+- **Schema & Seeding** — Automatic schema migrations and baseline template/preset seeding.
+- **Durable Job Queue & Tenant Isolation** — Persistent storage for profiles, branches, versions, quotas, and background tailoring jobs.
 
-This repository is part of the **Resumeee** multi-module suite:
+## Verification
 
-```
-github.com/resumeee-app/
-├── core                   # Pure domain entities, centralized store.Store engine, worker, storetest
-├── sql                    # Pure SQL store.Backend adapter (GORM SQLite / Postgres / MySQL)
-├── server                 # Production REST & MCP server and asynchronous worker pipeline
-├── web                    # React 18 / Vite / TypeScript single-page applicatio
-└── resumeee               # Flagship umbrella distribution repository
-```
-
-## Packages
-
-- **`sql`**: Relational `store.Backend` implementation (`Backend`, `NewBackend`, `Open`, `OpenWithOptions`, `OpenStore`), schema migrations (`AutoMigrate`, `MigrateSchema`), connection pooling, dialect configuration, and baseline seeding (`SeedBaseline`, `SeedDefaultData`).
-
-## Quality Gates
+Requires **Go 1.27+**.
 
 ```bash
 GOWORK=off make verify
 ```
 
-Runs:
-- `gofmt -l .`
-- `go test -race -v ./...` (executes full `core/storetest` compliance suite against both SQLite memory and file-backed WAL databases, schema/index checks, rollback atomicity, and multi-instance file concurrency tests)
-- `golangci-lint run ./...`
+---
 
 ## License & Trademarks
 
