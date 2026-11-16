@@ -14,7 +14,7 @@ type jobRecord struct {
 	Kind           core.JobKind           `gorm:"index;not null"`
 	UserID         string                 `gorm:"index;not null"`
 	Status         core.JobStatus         `gorm:"index;not null"`
-	AttemptCount   int                    `gorm:"column:attempt_count;not null"`
+	AttemptCount   int                    `gorm:"column:attempt_count;not null;default:0"`
 	ErrorMessage   string                 `gorm:"column:error_message"`
 	ReservationID  string                 `gorm:"column:reservation_id;index"`
 	ExpiresAt      *time.Time             `gorm:"column:expires_at;index"`

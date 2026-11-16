@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/resumeee-app/core"
 	"github.com/resumeee-app/core/store"
 	"github.com/resumeee-app/core/storetest"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // memorySeq generates unique SQLite shared-cache database names across compliance subtests.
@@ -348,5 +351,65 @@ func TestSanitizeDSN(t *testing.T) {
 				t.Errorf("SanitizeDSN(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestOpenStore_MigratesLegacyBranchAndVersionSchema(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	legacyDB, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+
+	legacyDDL := []string{
+		`CREATE TABLE "target_resumes" (` +
+			`"id" text,"user_id" text NOT NULL,"name" text NOT NULL,"is_default" numeric NOT NULL,` +
+			`"target_role" text,"target_company" text,"target_requirements" text,"branch_instructions" text,` +
+			`"preset_id" text,"template_set_id" text NOT NULL,"provider_override" text,"model_override" text,` +
+			`"reasoning_level" text,"pinned_entity_ids" text,"excluded_entity_ids" text,"active_version_id" text,` +
+			`"gap_report" text,"ats_score" text,"last_synced_main_revision" integer,"created_at" datetime,"updated_at" datetime,` +
+			`PRIMARY KEY ("id"))`,
+		`INSERT INTO "target_resumes" ("id","user_id","name","is_default","template_set_id","active_version_id","last_synced_main_revision") ` +
+			`VALUES ('branch-default-default','default','Main Profile (Default)',1,'builtin-standard-clean','ver-default-default',1)`,
+		`CREATE TABLE "resume_versions" (` +
+			`"id" text,"user_id" text NOT NULL,"branch_id" text,"version_number" integer NOT NULL,"status" text NOT NULL,` +
+			`"main_revision_used" integer,"template_set_id_used" text,"strategy_id_used" text,"provider_used" text,"model_used" text,` +
+			`"source_type" text,"parent_version_id" text,"tailored_content" text,"gap_report" text,"ats_score" text,` +
+			`"validation_warnings" text,"error_message" text,"html_output" text,"markdown_output" text,"plain_text_output" text,` +
+			`"created_at" datetime,"completed_at" datetime,PRIMARY KEY ("id"))`,
+		`INSERT INTO "resume_versions" ("id","user_id","branch_id","version_number","status") ` +
+			`VALUES ('ver-default-default','default','branch-default-default',1,'completed')`,
+	}
+	for _, stmt := range legacyDDL {
+		if err := legacyDB.Exec(stmt).Error; err != nil {
+			t.Fatalf("exec legacy ddl %q: %v", stmt, err)
+		}
+	}
+	closeUnderlyingDB(legacyDB)
+
+	st, err := OpenStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenStore on legacy DB failed: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	br, err := st.Branches().Branch(ctx, "default", "branch-default-default")
+	if err != nil {
+		t.Fatalf("Branch after migration: %v", err)
+	}
+	if br.Epoch != 1 {
+		t.Errorf("migrated Branch.Epoch = %d, want 1", br.Epoch)
+	}
+
+	ver, err := st.Branches().Version(ctx, "branch-default-default", "ver-default-default")
+	if err != nil {
+		t.Fatalf("Version after migration: %v", err)
+	}
+	if ver.BranchEpoch != 1 {
+		t.Errorf("migrated BranchVersion.BranchEpoch = %d, want 1", ver.BranchEpoch)
 	}
 }
