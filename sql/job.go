@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // jobRecord maps unified core.Job instances to the relational jobs table.

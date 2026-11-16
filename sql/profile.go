@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 	"gorm.io/gorm"
 )
 

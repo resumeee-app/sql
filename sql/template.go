@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // templateSetRecord maps core.TemplateSet to the relational template_sets table.

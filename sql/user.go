@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // userRecord maps core.User to the relational users table.

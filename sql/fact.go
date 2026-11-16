@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // factRecord maps core.Fact to the relational facts table.
