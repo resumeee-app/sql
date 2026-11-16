@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // tenantQuotaRecord maps core.TenantQuota to the relational tenant_quotas table.

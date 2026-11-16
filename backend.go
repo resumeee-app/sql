@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core/store"
+	"github.com/resumeee-app/core/store"
 	"gorm.io/gorm"
 )
 
@@ -24,7 +24,7 @@ const (
 	baseTxRetryDelay = 4 * time.Millisecond
 )
 
-// Backend implements resumeee-core/store.Backend using GORM with dialect-specific
+// Backend implements core/store.Backend using GORM with dialect-specific
 // read/write transaction isolation and retry guarantees.
 type Backend struct {
 	db        *gorm.DB

@@ -1,10 +1,10 @@
-module github.com/resumeee-app/resumeee-storage-sql
+module github.com/resumeee-app/sql
 
 go 1.27.2
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/resumeee-app/resumeee-core v0.0.0-20261115233516-a33742e83521
+	github.com/resumeee-app/core v0.0.0-20261116055334-268b7be87011
 	gorm.io/gorm v1.31.2
 )
 

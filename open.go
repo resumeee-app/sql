@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/glebarez/sqlite"
-	"github.com/resumeee-app/resumeee-core/seed"
-	"github.com/resumeee-app/resumeee-core/store"
+	"github.com/resumeee-app/core/seed"
+	"github.com/resumeee-app/core/store"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

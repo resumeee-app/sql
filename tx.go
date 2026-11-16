@@ -3,8 +3,8 @@ package sql
 import (
 	"strings"
 
-	"github.com/resumeee-app/resumeee-core"
-	"github.com/resumeee-app/resumeee-core/store"
+	"github.com/resumeee-app/core"
+	"github.com/resumeee-app/core/store"
 	"gorm.io/gorm"
 )
 

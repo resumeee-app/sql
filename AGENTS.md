@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Idiomatic Go standards for `resumeee-storage-sql`. Run `make verify` after every change.
+Idiomatic Go standards for `sql` (`github.com/resumeee-app/sql`). Run `make verify` after every change.
 
 ## Documentation
 
@@ -11,7 +11,7 @@ Idiomatic Go standards for `resumeee-storage-sql`. Run `make verify` after every
 
 ## Interfaces & Type Safety
 
-- **Consumer-side interfaces**: Implement `resumeee-core` store/repository contracts without leaking GORM or SQL types across package boundaries. Define any internal storage abstractions in the package that consumes them.
+- **Consumer-side interfaces**: Implement `core` store/repository contracts without leaking GORM or SQL types across package boundaries. Define any internal storage abstractions in the package that consumes them.
 - **Accept interfaces, return structs**: Accept interfaces in constructors/functions when abstraction is needed, and return concrete struct pointers (`*Store`, `*Repo`).
 - **Compile-time implementation checks**: Verify interface satisfaction at compile time with `var _ Interface = (*ConcreteType)(nil)` in the implementing package.
 - **Typed contracts over assertions**: Pass concrete types or typed interfaces instead of `any` with runtime type assertions (`v.(T)`). Restrict `any` and type switches strictly to dynamic JSON column scanning/marshaling boundaries.
@@ -26,7 +26,7 @@ Idiomatic Go standards for `resumeee-storage-sql`. Run `make verify` after every
   - Omit `Get` on simple getters (`DB()` rather than `GetDB()`).
   - Name constructors `New` or `New<Type>`, and sentinel errors `Err<Name>`.
   - Use a consistent 1–2 letter receiver name derived from the type across all methods (never `this` or `self`).
-- **Dependency boundaries**: Encapsulate GORM models, callbacks, and SQLite/SQL dialect details inside `sql/`; map to/from `resumeee-core` domain types at the repository boundary.
+- **Dependency boundaries**: Encapsulate GORM models, callbacks, and SQLite/SQL dialect details inside package `sql`; map to/from `core` domain types at the repository boundary.
 
 ## Verification
 
