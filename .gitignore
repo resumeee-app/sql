@@ -1,0 +1,17 @@
+*.out
+*.test
+*.prof
+coverage.txt
+coverage.html
+*.db
+*.db-*
+*.sqlite*
+.env
+.env.*
+!.env.example
+.DS_Store
+.worktrees/
+.vscode/
+.idea/
+.gemini/
+.claude/

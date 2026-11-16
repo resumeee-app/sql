@@ -12,10 +12,8 @@ This repository is part of the **Resumeee** multi-module suite:
 github.com/resumeee-app/
 ├── core                   # Pure domain entities, centralized store.Store engine, worker, storetest
 ├── sql                    # Pure SQL store.Backend adapter (GORM SQLite / Postgres / MySQL)
-├── resumeee-auth-firebase # Token verifier adapter (Firebase RS256 JWKS)
 ├── server                 # Production REST & MCP server and asynchronous worker pipeline
-├── web                    # React 18 / Vite / TypeScript single-page application
-├── resumeee-mcp           # Standalone Model Context Protocol (MCP) server
+├── web                    # React 18 / Vite / TypeScript single-page applicatio
 └── resumeee               # Flagship umbrella distribution repository
 ```
 
