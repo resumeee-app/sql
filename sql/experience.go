@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // workExperienceRecord maps core.WorkExperience to the relational work_experiences table.

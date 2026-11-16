@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 )
 
 // presetRecord maps core.Preset to the relational tailoring_strategies table.

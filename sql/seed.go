@@ -3,8 +3,8 @@ package sql
 import (
 	"context"
 
-	"github.com/resumeee-app/resumeee-core/seed"
-	"github.com/resumeee-app/resumeee-core/store"
+	"github.com/resumeee-app/core/seed"
+	"github.com/resumeee-app/core/store"
 )
 
 // SeedDefaultData idempotently populates built-in templates, presets, global skills,

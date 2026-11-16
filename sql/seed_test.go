@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/resumeee-app/resumeee-core"
-	"github.com/resumeee-app/resumeee-core/seed"
+	"github.com/resumeee-app/core"
+	"github.com/resumeee-app/core/seed"
 )
 
 func TestSeedDefaultData_FirstBootAndIdempotency(t *testing.T) {

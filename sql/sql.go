@@ -1,10 +1,10 @@
-// Package sql implements a relational persistence backend for resumeee-core/store
+// Package sql implements a relational persistence backend for core/store
 // backed by GORM across SQLite, PostgreSQL, and MySQL.
 //
 // This package provides durable CRUD persistence, atomic transaction boundaries
 // (including SQLite BEGIN IMMEDIATE write serialization and SQL SERIALIZABLE
 // retry handling), schema migration, connection pooling, DSN redaction, and
-// idempotent baseline store bootstrapping. All domain logic lives in resumeee-core.
+// idempotent baseline store bootstrapping. All domain logic lives in core.
 package sql
 
 import (
@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"github.com/resumeee-app/resumeee-core"
+	"github.com/resumeee-app/core"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

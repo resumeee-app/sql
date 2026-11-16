@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/resumeee-app/resumeee-core"
-	"github.com/resumeee-app/resumeee-core/store"
-	"github.com/resumeee-app/resumeee-core/storetest"
+	"github.com/resumeee-app/core"
+	"github.com/resumeee-app/core/store"
+	"github.com/resumeee-app/core/storetest"
 )
 
 // memorySeq generates unique SQLite shared-cache database names across compliance subtests.
