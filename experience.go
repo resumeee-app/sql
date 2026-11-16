@@ -18,7 +18,7 @@ type workExperienceRecord struct {
 	EmploymentType    core.EmploymentType `gorm:"column:employment_type"`
 	StartDate         core.Date           `gorm:"column:start_date;type:text"`
 	EndDate           *core.Date          `gorm:"column:end_date;type:text"`
-	IsCurrent         bool                `gorm:"column:is_current;not null"`
+	IsCurrent         bool                `gorm:"column:is_current;not null;default:false"`
 	Location          core.Location       `gorm:"serializer:json"`
 	CompanyLocation   core.Location       `gorm:"serializer:json"`
 	CompanyContact    *core.ContactDetail `gorm:"serializer:json"`

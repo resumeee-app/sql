@@ -15,7 +15,7 @@ type userRecord struct {
 	FullName  string        `gorm:"column:full_name"`
 	Role      core.UserRole `gorm:"column:role;not null"`
 	Tier      string        `gorm:"column:tier"`
-	IsActive  bool          `gorm:"column:is_active;not null"`
+	IsActive  bool          `gorm:"column:is_active;not null;default:false"`
 	CreatedAt time.Time     `gorm:"autoCreateTime:false"`
 	UpdatedAt time.Time     `gorm:"autoUpdateTime:false"`
 }

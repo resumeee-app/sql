@@ -15,7 +15,7 @@ type templateSetRecord struct {
 	UserID           string    `gorm:"index;not null"`
 	Name             string    `gorm:"not null"`
 	Description      string    `gorm:"column:description"`
-	IsBuiltIn        bool      `gorm:"column:is_built_in;not null"`
+	IsBuiltIn        bool      `gorm:"column:is_built_in;not null;default:false"`
 	HTMLTemplate     string    `gorm:"not null"`
 	CSSStyles        string    `gorm:"column:css_styles"`
 	MarkdownTemplate string    `gorm:"not null"`

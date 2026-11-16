@@ -13,7 +13,7 @@ type branchRecord struct {
 	ID                     string          `gorm:"primaryKey;type:text"`
 	UserID                 string          `gorm:"index;not null"`
 	Name                   string          `gorm:"not null"`
-	IsDefault              bool            `gorm:"column:is_default;index;not null"`
+	IsDefault              bool            `gorm:"column:is_default;index;not null;default:false"`
 	TargetRole             string          `gorm:"column:target_role"`
 	TargetCompany          string          `gorm:"column:target_company"`
 	TargetRequirements     string          `gorm:"column:target_requirements"`
@@ -28,8 +28,8 @@ type branchRecord struct {
 	ActiveVersionID        *string         `gorm:"column:active_version_id;index"`
 	GapReport              *core.GapReport `gorm:"serializer:json"`
 	ATSScore               *core.ATSScore  `gorm:"serializer:json"`
-	Epoch                  int64           `gorm:"column:epoch;not null"`
-	LastSyncedMainRevision int64           `gorm:"column:last_synced_main_revision;not null"`
+	Epoch                  int64           `gorm:"column:epoch;not null;default:1"`
+	LastSyncedMainRevision int64           `gorm:"column:last_synced_main_revision;not null;default:0"`
 	CreatedAt              time.Time       `gorm:"autoCreateTime:false"`
 	UpdatedAt              time.Time       `gorm:"autoUpdateTime:false"`
 }
@@ -137,7 +137,7 @@ type branchVersionRecord struct {
 	BranchID           string                `gorm:"uniqueIndex:idx_branch_version,priority:1;column:branch_id;index;not null"`
 	JobID              string                `gorm:"column:job_id;index"`
 	VersionNumber      int                   `gorm:"uniqueIndex:idx_branch_version,priority:2;column:version_number;not null"`
-	BranchEpoch        int64                 `gorm:"column:branch_epoch;not null"`
+	BranchEpoch        int64                 `gorm:"column:branch_epoch;not null;default:1"`
 	Status             core.VersionStatus    `gorm:"index;not null"`
 	MainRevisionUsed   int64                 `gorm:"column:main_revision_used"`
 	TemplateSetIDUsed  string                `gorm:"column:template_set_id_used"`
