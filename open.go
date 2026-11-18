@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/glebarez/sqlite"
 	"github.com/resumeee-app/core/seed"
 	"github.com/resumeee-app/core/store"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

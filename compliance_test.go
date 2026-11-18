@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/resumeee-app/core"
 	"github.com/resumeee-app/core/store"
 	"github.com/resumeee-app/core/storetest"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

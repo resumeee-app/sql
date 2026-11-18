@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/resumeee-app/core"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
